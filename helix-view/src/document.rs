@@ -54,8 +54,8 @@ use crate::{
 /// 8kB of buffer space for encoding and decoding `Rope`s.
 const BUF_SIZE: usize = 8192;
 
-const DEFAULT_INDENT: IndentStyle = IndentStyle::Tabs;
-const DEFAULT_TAB_WIDTH: usize = 3;
+const DEFAULT_TAB_WIDTH: usize = 4;
+const DEFAULT_INDENT: IndentStyle = IndentStyle::Spaces(DEFAULT_TAB_WIDTH as u8);
 
 pub const DEFAULT_LANGUAGE_NAME: &str = "text";
 

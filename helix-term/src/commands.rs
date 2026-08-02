@@ -5222,7 +5222,7 @@ pub mod insert {
     fn insert_tab_impl(cx: &mut Context, count: usize) {
         let (view, doc) = current!(cx.editor);
 
-        let indent = Tendril::from("\t".repeat(count));
+        let indent = Tendril::from(doc.indent_style.as_str().repeat(count));
         let transaction = Transaction::insert_at_cursor(doc.text(), doc.selection(view.id), indent);
         doc.apply(&transaction, view.id);
     }
