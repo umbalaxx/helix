@@ -6,7 +6,7 @@ use tui::{buffer::Buffer as Surface, widgets::Table};
 
 pub use tui::widgets::{Cell, Row};
 
-use helix_view::{editor::SmartTabConfig, graphics::Rect, Editor};
+use helix_view::{graphics::Rect, Editor};
 use tui::layout::Constraint;
 
 pub trait Item: Sync + Send + 'static {
@@ -97,7 +97,9 @@ impl<T: Item> Menu<T> {
     }
 
     pub fn move_up(&mut self) {
-        let pos = self.cursor.map_or(0, |i| i.saturating_sub(1));
+        let len = self.matches.len();
+        let max_index = len.saturating_sub(1);
+        let pos = self.cursor.map_or(max_index, |i| (i + max_index) % len) % len;
         self.cursor = Some(pos);
         self.adjust_scroll();
     }
@@ -112,11 +114,7 @@ impl<T: Item> Menu<T> {
 
     pub fn move_down(&mut self) {
         let len = self.matches.len();
-        let max_index = len.saturating_sub(1);
-        let pos = self
-            .cursor
-            .map_or(0, |i| i.saturating_add(1))
-            .min(max_index);
+        let pos = self.cursor.map_or(0, |i| i + 1) % len;
         self.cursor = Some(pos);
         self.adjust_scroll();
     }
@@ -242,21 +240,6 @@ impl<T: Item + 'static> Component for Menu<T> {
             compositor.pop();
         }));
 
-        // Ignore tab key when supertab is turned on in order not to interfere
-        // with it. (Is there a better way to do this?)
-        if (event == key!(Tab) || event == shift!(Tab))
-            && cx.editor.config().auto_completion
-            && matches!(
-                cx.editor.config().smart_tab,
-                Some(SmartTabConfig {
-                    enable: true,
-                    supersede_menu: true,
-                })
-            )
-        {
-            return EventResult::Ignored(None);
-        }
-
         match event {
             // esc or ctrl-c aborts the completion and closes the menu
             key!(Esc) | ctrl!('c') => {
@@ -264,24 +247,24 @@ impl<T: Item + 'static> Component for Menu<T> {
                 return EventResult::Consumed(close_fn);
             }
             // arrow up/ctrl-p/shift-tab prev completion choice (including updating the doc)
-            key!(Up) | ctrl!('p') => {
+            shift!(Tab) | key!(Up) | ctrl!('p') => {
                 self.move_up();
                 (self.callback_fn)(cx.editor, self.selection(), MenuEvent::Update);
                 return EventResult::Consumed(None);
             }
-            key!(Down) | ctrl!('n') => {
+            key!(Tab) | key!(Down) | ctrl!('n') => {
                 // arrow down/ctrl-n/tab advances completion choice (including updating the doc)
                 self.move_down();
                 (self.callback_fn)(cx.editor, self.selection(), MenuEvent::Update);
                 return EventResult::Consumed(None);
             }
-            shift!(PageUp) => {
+            key!(PageUp) | ctrl!('u') => {
                 // page up moves back in the completion choice (including updating the doc)
                 self.move_half_page_up();
                 (self.callback_fn)(cx.editor, self.selection(), MenuEvent::Update);
                 return EventResult::Consumed(None);
             }
-            shift!(PageDown) => {
+            key!(PageDown) | ctrl!('d') => {
                 // page down advances completion choice (including updating the doc)
                 self.move_half_page_down();
                 (self.callback_fn)(cx.editor, self.selection(), MenuEvent::Update);
