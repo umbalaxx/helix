@@ -52,7 +52,7 @@ use helix_core::{
 };
 use helix_view::{
     document::{FormatterError, Mode, SearchMatch, SearchMatchLimit, SCRATCH_BUFFER_NAME},
-    editor::{Action, Motion, OptionToml, SearchConfig},
+    editor::{Action, CompleteAction, Motion, OptionToml, SearchConfig},
     expansion,
     info::Info,
     input::KeyEvent,
@@ -5185,7 +5185,14 @@ pub mod insert {
         });
 
         let doc = doc_mut!(cx.editor, &doc.id());
-        doc.apply(&transaction, view.id);
+        // When completion is selected (ghost text showing), don't notify LSP yet.
+        // The validation will properly apply the character with LSP notification.
+        let is_completion_selected = matches!(cx.editor.last_completion, Some(CompleteAction::Selected { .. }));
+        if is_completion_selected {
+            doc.apply_temporary(&transaction, view.id);
+        } else {
+            doc.apply(&transaction, view.id);
+        }
 
         helix_event::dispatch(PostInsertChar { c, cx });
     }

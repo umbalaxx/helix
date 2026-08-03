@@ -6,7 +6,7 @@ use tui::{buffer::Buffer as Surface, widgets::Table};
 
 pub use tui::widgets::{Cell, Row};
 
-use helix_view::{editor::SmartTabConfig, graphics::Rect, Editor};
+use helix_view::{editor::SmartTabConfig, graphics::Rect, Editor, editor::CompleteAction};
 use tui::layout::Constraint;
 
 pub trait Item: Sync + Send + 'static {
@@ -212,6 +212,10 @@ impl<T: Item> Menu<T> {
     pub fn len(&self) -> usize {
         self.matches.len()
     }
+
+    pub fn validate_selection(&mut self, editor: &mut Editor) {
+        (self.callback_fn)(editor, self.selection(), MenuEvent::Validate);
+    }
 }
 
 impl<T: Item + PartialEq> Menu<T> {
@@ -244,6 +248,8 @@ impl<T: Item + 'static> Component for Menu<T> {
 
         // Ignore tab key when supertab is turned on in order not to interfere
         // with it. (Is there a better way to do this?)
+        // But if completion is already selected (user navigated with tab/arrows),
+        // tab should navigate completion instead of falling through to smart_tab.
         if (event == key!(Tab) || event == shift!(Tab))
             && cx.editor.config().auto_completion
             && matches!(
@@ -253,6 +259,7 @@ impl<T: Item + 'static> Component for Menu<T> {
                     supersede_menu: true,
                 })
             )
+            && !matches!(cx.editor.last_completion, Some(CompleteAction::Selected { .. }))
         {
             return EventResult::Ignored(None);
         }
@@ -269,7 +276,7 @@ impl<T: Item + 'static> Component for Menu<T> {
                 (self.callback_fn)(cx.editor, self.selection(), MenuEvent::Update);
                 return EventResult::Consumed(None);
             }
-            key!(Down) | ctrl!('n') => {
+            key!(Down) | ctrl!('n') | key!(Tab) => {
                 // arrow down/ctrl-n/tab advances completion choice (including updating the doc)
                 self.move_down();
                 (self.callback_fn)(cx.editor, self.selection(), MenuEvent::Update);

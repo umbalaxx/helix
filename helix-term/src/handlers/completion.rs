@@ -170,6 +170,28 @@ pub fn trigger_auto_completion(editor: &Editor, trigger_char_only: bool) {
     }
 }
 
+fn validate_completion(cx: &mut commands::Context, c: char) {
+    cx.callback.push(Box::new(move |compositor, cx| {
+        let editor_view = compositor.find::<ui::EditorView>().unwrap();
+        if let Some(completion) = &mut editor_view.completion {
+            completion.validate_selection(cx.editor);
+        }
+        // Re-insert the character after validation using insert_char which handles auto_pairs
+        // We need to construct a commands::Context from compositor::Context
+        commands::insert::insert_char(
+            &mut commands::Context {
+                register: None,
+                count: None,
+                editor: cx.editor,
+                callback: Vec::new(),
+                on_next_key_callback: None,
+                jobs: cx.jobs,
+            },
+            c,
+        );
+    }))
+}
+
 fn update_completion_filter(cx: &mut commands::Context, c: Option<char>) {
     cx.callback.push(Box::new(move |compositor, cx| {
         let editor_view = compositor.find::<ui::EditorView>().unwrap();
@@ -261,6 +283,10 @@ pub(super) fn register_hooks(_handlers: &Handlers) {
     });
 
     register_hook!(move |event: &mut PostInsertChar<'_, '_>| {
+        use helix_view::editor::CompleteAction;
+        if matches!(event.cx.editor.last_completion, Some(CompleteAction::Selected { .. })) {
+            validate_completion(event.cx, event.c);
+        }
         if event.cx.editor.last_completion.is_some() {
             update_completion_filter(event.cx, Some(event.c))
         } else {
