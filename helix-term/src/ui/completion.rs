@@ -455,6 +455,10 @@ impl Completion {
     pub fn area(&mut self, viewport: Rect, editor: &Editor) -> Rect {
         self.popup.area(viewport, editor)
     }
+
+    pub fn validate_selection(&mut self, editor: &mut Editor) {
+        self.popup.contents_mut().validate_selection(editor);
+    }
 }
 
 impl Component for Completion {
