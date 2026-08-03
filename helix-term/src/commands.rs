@@ -7608,7 +7608,7 @@ fn select_textobject(cx: &mut Context, objtype: textobject::TextObject) {
         ("f", "Function 󰌪"),
         ("l", "Loop 󰌪"),
         ("r", "Conditional 󰌪"),
-        ("c", "Type 󰌪"),
+        ("c", "Class 󰌪"),
         ("t", "Test 󰌪"),
         ("v", "Comment 󰌪"),
         ("x", "Tag 󰌪"),
