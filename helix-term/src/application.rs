@@ -25,7 +25,7 @@ use crate::{
     handlers,
     job::Jobs,
     keymap::Keymaps,
-    ui::{self},
+    ui::{self, overlay::overlaid},
 };
 
 use log::{debug, error, info, warn};
@@ -79,7 +79,7 @@ pub struct Application {
     lsp_progress: LspProgressMap,
 
     theme_mode: Option<theme::Mode>,
-    startup_ripgrep: Option<PathBuf>,
+    startup_dir: Option<PathBuf>,
 }
 
 #[cfg(feature = "integration")]
@@ -142,7 +142,7 @@ impl Application {
 
         let jobs = Jobs::new();
 
-        let mut startup_ripgrep = None;
+        let mut startup_dir = None;
 
         if args.load_tutor {
             let path = helix_loader::runtime_file(Path::new("tutor"));
@@ -154,7 +154,7 @@ impl Application {
 
             // If the first file is a directory, skip it and open a picker
             if let Some((first, _)) = files_it.next_if(|(p, _)| p.is_dir()) {
-                startup_ripgrep = Some(first);
+                startup_dir = Some(first);
             }
 
             // If there are any more files specified, open them
@@ -258,7 +258,7 @@ impl Application {
             jobs,
             lsp_progress: LspProgressMap::new(),
             theme_mode,
-            startup_ripgrep,
+            startup_dir,
         };
 
         let gc_max_age = app.editor.config().session.gc_max_age;
@@ -315,7 +315,7 @@ impl Application {
     {
         self.render().await;
 
-        if let Some(dir) = self.startup_ripgrep.take() {
+        if let Some(dir) = self.startup_dir.take() {
             let mut cx = crate::commands::Context {
                 register: None,
                 count: None,
@@ -325,7 +325,8 @@ impl Application {
                 on_next_key_callback: None,
             };
 
-            crate::commands::global_search_impl(&mut cx, dir);
+            let picker = ui::file_picker(cx.editor, dir);
+            cx.push_layer(Box::new(overlaid(picker)));
 
             for callback in cx.callback {
                 let mut comp_cx = crate::compositor::Context {
