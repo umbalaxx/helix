@@ -170,12 +170,19 @@ pub fn trigger_auto_completion(editor: &Editor, trigger_char_only: bool) {
     }
 }
 
-fn validate_completion(cx: &mut commands::Context) {
-    cx.callback.push(Box::new(|compositor, cx| {
+fn validate_completion(cx: &mut commands::Context, c: char) {
+    cx.callback.push(Box::new(move |compositor, cx| {
         let editor_view = compositor.find::<ui::EditorView>().unwrap();
         if let Some(completion) = &mut editor_view.completion {
             completion.validate_selection(cx.editor);
         }
+        // Re-insert the character after validation
+        // The character was already inserted by insert_char, but validation restored
+        // the savepoint (undoing it without LSP notification), so we need to re-insert
+        let (view, doc) = current!(cx.editor);
+        let text = c.to_string();
+        let transaction = helix_core::Transaction::insert_at_cursor(doc.text(), doc.selection(view.id), text.into());
+        doc.apply(&transaction, view.id);
     }))
 }
 
@@ -272,7 +279,7 @@ pub(super) fn register_hooks(_handlers: &Handlers) {
     register_hook!(move |event: &mut PostInsertChar<'_, '_>| {
         use helix_view::editor::CompleteAction;
         if matches!(event.cx.editor.last_completion, Some(CompleteAction::Selected { .. })) {
-            validate_completion(event.cx);
+            validate_completion(event.cx, event.c);
         }
         if event.cx.editor.last_completion.is_some() {
             update_completion_filter(event.cx, Some(event.c))
