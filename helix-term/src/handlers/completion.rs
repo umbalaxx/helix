@@ -176,13 +176,19 @@ fn validate_completion(cx: &mut commands::Context, c: char) {
         if let Some(completion) = &mut editor_view.completion {
             completion.validate_selection(cx.editor);
         }
-        // Re-insert the character after validation
-        // The character was already inserted by insert_char, but validation restored
-        // the savepoint (undoing it without LSP notification), so we need to re-insert
-        let (view, doc) = current!(cx.editor);
-        let text = c.to_string();
-        let transaction = helix_core::Transaction::insert_at_cursor(doc.text(), doc.selection(view.id), text.into());
-        doc.apply(&transaction, view.id);
+        // Re-insert the character after validation using insert_char which handles auto_pairs
+        // We need to construct a commands::Context from compositor::Context
+        commands::insert::insert_char(
+            &mut commands::Context {
+                register: None,
+                count: None,
+                editor: cx.editor,
+                callback: Vec::new(),
+                on_next_key_callback: None,
+                jobs: cx.jobs,
+            },
+            c,
+        );
     }))
 }
 
