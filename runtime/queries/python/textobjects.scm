@@ -33,3 +33,25 @@
 
 (pair
   (_) @entry.inside) @entry.around
+
+; Loops
+(for_statement) @loop.around
+(for_statement
+  body: (block) @loop.inside)
+
+(while_statement) @loop.around
+(while_statement
+  body: (block) @loop.inside)
+
+; Conditionals
+(if_statement) @conditional.around
+(if_statement
+  consequence: (block) @conditional.inside)
+
+(elif_clause) @conditional.around
+(elif_clause
+  consequence: (block) @conditional.inside)
+
+(else_clause) @conditional.around
+(else_clause
+  body: (block) @conditional.inside)

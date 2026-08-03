@@ -101,8 +101,6 @@ This only applies to the `text` filetype, and only if helix didn't notice a diff
 
 `indent` action now works even on empty lines.
 
-`insert_tab` inserts the tab character always, not whatever the indent string is.
-
 The `scrolloff` option is applied only vertically, not also horizontally.
 
 `select_next_sibling`, `select_prev_sibling`, `extend_next_sibling`, `extend_prev_sibling` skip unnamed treesitter nodes, similar to how `select_all_children` does.
@@ -938,3 +936,5 @@ Discuss the project on the community [Matrix Space](https://matrix.to/#/#helix-c
 # Credits
 
 Thanks to [@jakenvac](https://github.com/jakenvac) for designing the logo!
+
+

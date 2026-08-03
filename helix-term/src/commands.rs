@@ -617,6 +617,10 @@ impl MappableCommand {
         goto_prev_xml_element, "Goto previous (X)HTML element",
         goto_next_entry, "Goto next pairing",
         goto_prev_entry, "Goto previous pairing",
+        goto_next_loop, "Goto next loop",
+        goto_prev_loop, "Goto previous loop",
+        goto_next_conditional, "Goto next conditional",
+        goto_prev_conditional, "Goto previous conditional",
         goto_next_paragraph, "Goto next paragraph",
         goto_prev_paragraph, "Goto previous paragraph",
         dap_launch, "Launch debug target",
@@ -7348,6 +7352,22 @@ fn goto_prev_entry(cx: &mut Context) {
     goto_ts_object_impl(cx, "entry", Direction::Backward)
 }
 
+fn goto_next_loop(cx: &mut Context) {
+    goto_ts_object_impl(cx, "loop", Direction::Forward)
+}
+
+fn goto_prev_loop(cx: &mut Context) {
+    goto_ts_object_impl(cx, "loop", Direction::Backward)
+}
+
+fn goto_next_conditional(cx: &mut Context) {
+    goto_ts_object_impl(cx, "conditional", Direction::Forward)
+}
+
+fn goto_prev_conditional(cx: &mut Context) {
+    goto_ts_object_impl(cx, "conditional", Direction::Backward)
+}
+
 fn select_textobject_around(cx: &mut Context) {
     select_textobject(cx, textobject::TextObject::Around);
 }
@@ -7470,6 +7490,8 @@ fn select_textobject(cx: &mut Context, objtype: textobject::TextObject) {
                             }
                             'c' => textobject_treesitter("class", range),
                             'f' => textobject_treesitter("function", range),
+                            'l' => textobject_treesitter("loop", range),
+                            'r' => textobject_treesitter("conditional", range),
                             'a' => textobject_treesitter("parameter", range),
                             'v' => textobject_treesitter("comment", range),
                             't' => textobject_treesitter("test", range),
@@ -7584,6 +7606,8 @@ fn select_textobject(cx: &mut Context, objtype: textobject::TextObject) {
         ("a", "Argument 󰌪"),
         ("e", "Entry 󰌪"),
         ("f", "Function 󰌪"),
+        ("l", "Loop 󰌪"),
+        ("r", "Conditional 󰌪"),
         ("c", "Type 󰌪"),
         ("t", "Test 󰌪"),
         ("v", "Comment 󰌪"),
