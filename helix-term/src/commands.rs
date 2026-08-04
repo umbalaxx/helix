@@ -7438,6 +7438,25 @@ fn select_textobject(cx: &mut Context, objtype: textobject::TextObject) {
         }
     }
 
+    fn find_next_bracket_on_line(text: RopeSlice, range: Range, ch: char) -> Option<usize> {
+        let (open, close) = match_brackets::get_pair(ch);
+        let line = range.cursor_line(text);
+        let line_end = text.line_to_char((line + 1).min(text.len_lines()));
+        let search_start = range.to().min(line_end);
+
+        let mut pos = search_start;
+        let mut chars = text.chars_at(search_start);
+        while pos < line_end {
+            if let Some(c) = chars.next() {
+                if c == open || c == close {
+                    return Some(pos);
+                }
+            }
+            pos += 1;
+        }
+        None
+    }
+
     cx.on_next_key(move |cx, event| {
         cx.editor.autoinfo = None;
         if let Some(ch) = event.char() {
@@ -7587,9 +7606,61 @@ fn select_textobject(cx: &mut Context, objtype: textobject::TextObject) {
                                 }
                             }),
                         );
-                    // The selection didn't change even after the second attempt, so we revert the selection aaaall the way to the initial one, before the user pressed `mi`
+                    // The selection didn't change even after the second attempt, so we try to find the next bracket on the current line.
                     } else {
-                        doc.set_selection(view.id, stored_selection);
+                        let text = doc.text().slice(..);
+                        let range = old_selection.primary();
+                        let search_result = if ch == 'm' {
+                            const BRACKETS: &str = "({[<<「（";
+                            let line = range.cursor_line(text);
+                            let line_end = text.line_to_char((line + 1).min(text.len_lines()));
+                            let search_start = range.to().min(line_end);
+
+                            let mut pos = search_start;
+                            let mut chars = text.chars_at(search_start);
+                            let mut result = None;
+                            while pos < line_end {
+                                if let Some(c) = chars.next() {
+                                    if BRACKETS.contains(c) {
+                                        result = Some(pos);
+                                        break;
+                                    }
+                                }
+                                pos += 1;
+                            }
+                            result
+                        } else if !ch.is_ascii_alphanumeric() {
+                            find_next_bracket_on_line(text, range, ch)
+                        } else {
+                            None
+                        };
+
+                        if let Some(pos) = search_result {
+                            let new_range = Range::point(pos);
+                            let new_selection = doc.selection(view.id).clone().transform(|_| {
+                                if ch == 'm' {
+                                    textobject::textobject_pair_surround_closest(
+                                        doc.syntax(),
+                                        text,
+                                        new_range,
+                                        objtype,
+                                        count,
+                                    )
+                                } else {
+                                    textobject::textobject_pair_surround(
+                                        doc.syntax(),
+                                        text,
+                                        new_range,
+                                        objtype,
+                                        ch,
+                                        count,
+                                    )
+                                }
+                            });
+                            doc.set_selection(view.id, new_selection);
+                        } else {
+                            doc.set_selection(view.id, stored_selection);
+                        }
                         break;
                     }
                 }
