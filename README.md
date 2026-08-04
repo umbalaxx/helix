@@ -51,6 +51,18 @@ cargo install --path helix-term --locked
 
 Be careful though, as hard resetting might lose you features you like, that I ended up deleting on my end.
 
+# My change
+
+- Change tab to spaces
+- Fix/Revert indent engine back to brew's `hx` (to fix automatic for/if blocks in Python)
+- Add Python for/conditional blocks text objects (select via `mil`, `mir`)
+- Change default keymaps to align (`c` for class, works for `mi/mac` and `[/]c`)
+- Fix completion bug where ghost character is sent to LSP when a completion suggestion is selected and a character is typed
+- Restore `tab` for rotating through the completion popup
+- Change behavior -> now you can automatically accept the selection, and continue typing and send to LSP correctly
+- Add select next bracket on the same line if it fails to select bracket(s) in the current cursor position
+  (This works with `mi[ ([{}]) ]` and `mim`)
+
 # This fork's changes
 
 ## Merged PRs from upstream
