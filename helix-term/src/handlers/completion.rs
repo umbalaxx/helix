@@ -284,7 +284,10 @@ pub(super) fn register_hooks(_handlers: &Handlers) {
 
     register_hook!(move |event: &mut PostInsertChar<'_, '_>| {
         use helix_view::editor::CompleteAction;
-        if matches!(event.cx.editor.last_completion, Some(CompleteAction::Selected { .. })) {
+        if matches!(
+            event.cx.editor.last_completion,
+            Some(CompleteAction::Selected { .. })
+        ) {
             validate_completion(event.cx, event.c);
         }
         if event.cx.editor.last_completion.is_some() {

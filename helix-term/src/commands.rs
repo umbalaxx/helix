@@ -26,6 +26,10 @@ use tui::{
 pub use typed::*;
 
 use helix_core::{
+    case_conversion::{
+        to_alternate_case, to_camel_case, to_kebab_case, to_lower_case_with, to_pascal_case,
+        to_sentence_case, to_snake_case, to_title_case, to_upper_case_with,
+    },
     char_idx_at_visual_offset,
     chars::char_is_word,
     command_line::{self, Args},
@@ -76,7 +80,6 @@ use crate::{
 
 use crate::job::{self, Jobs};
 use std::{
-    char::{ToLowercase, ToUppercase},
     cmp::Ordering,
     collections::{HashMap, HashSet},
     error::Error,
@@ -374,9 +377,15 @@ impl MappableCommand {
         extend_prev_char, "Extend to previous occurrence of char",
         repeat_last_motion, "Repeat last motion",
         replace, "Replace with new char",
-        switch_case, "Switch (toggle) case",
+        switch_to_alternate_case, "Switch to aLTERNATE cASE",
         switch_to_uppercase, "Switch to uppercase",
         switch_to_lowercase, "Switch to lowercase",
+        switch_to_pascal_case, "Switch to PascalCase",
+        switch_to_camel_case, "Switch to camelCase",
+        switch_to_title_case, "Switch to Title Case",
+        switch_to_sentence_case, "Switch to Sentence case",
+        switch_to_snake_case, "Switch to snake_case",
+        switch_to_kebab_case, "Switch to kebab-case",
         page_up, "Move page up",
         page_down, "Move page down",
         half_page_up, "Move half page up",
@@ -2086,64 +2095,48 @@ where
     exit_select_mode(cx);
 }
 
-enum CaseSwitcher {
-    Upper(ToUppercase),
-    Lower(ToLowercase),
-    Keep(Option<char>),
-}
-
-impl Iterator for CaseSwitcher {
-    type Item = char;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            CaseSwitcher::Upper(upper) => upper.next(),
-            CaseSwitcher::Lower(lower) => lower.next(),
-            CaseSwitcher::Keep(ch) => ch.take(),
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        match self {
-            CaseSwitcher::Upper(upper) => upper.size_hint(),
-            CaseSwitcher::Lower(lower) => lower.size_hint(),
-            CaseSwitcher::Keep(ch) => {
-                let n = if ch.is_some() { 1 } else { 0 };
-                (n, Some(n))
-            }
-        }
-    }
-}
-
-impl ExactSizeIterator for CaseSwitcher {}
-
-fn switch_case(cx: &mut Context) {
-    switch_case_impl(cx, |string| {
-        string
-            .chars()
-            .flat_map(|ch| {
-                if ch.is_lowercase() {
-                    CaseSwitcher::Upper(ch.to_uppercase())
-                } else if ch.is_uppercase() {
-                    CaseSwitcher::Lower(ch.to_lowercase())
-                } else {
-                    CaseSwitcher::Keep(Some(ch))
-                }
-            })
-            .collect()
-    });
+fn switch_to_alternate_case(cx: &mut Context) {
+    switch_case_impl(cx, |string| to_alternate_case(string.chars()));
 }
 
 fn switch_to_uppercase(cx: &mut Context) {
     switch_case_impl(cx, |string| {
-        string.chunks().map(|chunk| chunk.to_uppercase()).collect()
+        let mut buf = Tendril::new();
+        to_upper_case_with(string.chars(), &mut buf);
+        buf
     });
 }
 
 fn switch_to_lowercase(cx: &mut Context) {
     switch_case_impl(cx, |string| {
-        string.chunks().map(|chunk| chunk.to_lowercase()).collect()
+        let mut buf = Tendril::new();
+        to_lower_case_with(string.chars(), &mut buf);
+        buf
     });
+}
+
+fn switch_to_pascal_case(cx: &mut Context) {
+    switch_case_impl(cx, |string| to_pascal_case(string.chars()));
+}
+
+fn switch_to_camel_case(cx: &mut Context) {
+    switch_case_impl(cx, |string| to_camel_case(string.chars()));
+}
+
+fn switch_to_title_case(cx: &mut Context) {
+    switch_case_impl(cx, |string| to_title_case(string.chars()));
+}
+
+fn switch_to_sentence_case(cx: &mut Context) {
+    switch_case_impl(cx, |string| to_sentence_case(string.chars()));
+}
+
+fn switch_to_snake_case(cx: &mut Context) {
+    switch_case_impl(cx, |string| to_snake_case(string.chars()));
+}
+
+fn switch_to_kebab_case(cx: &mut Context) {
+    switch_case_impl(cx, |string| to_kebab_case(string.chars()));
 }
 
 pub fn scroll(cx: &mut Context, offset: usize, direction: Direction, sync_cursor: bool) {
@@ -5187,7 +5180,10 @@ pub mod insert {
         let doc = doc_mut!(cx.editor, &doc.id());
         // When completion is selected (ghost text showing), don't notify LSP yet.
         // The validation will properly apply the character with LSP notification.
-        let is_completion_selected = matches!(cx.editor.last_completion, Some(CompleteAction::Selected { .. }));
+        let is_completion_selected = matches!(
+            cx.editor.last_completion,
+            Some(CompleteAction::Selected { .. })
+        );
         if is_completion_selected {
             doc.apply_temporary(&transaction, view.id);
         } else {

@@ -6,7 +6,7 @@ use tui::{buffer::Buffer as Surface, widgets::Table};
 
 pub use tui::widgets::{Cell, Row};
 
-use helix_view::{editor::SmartTabConfig, graphics::Rect, Editor, editor::CompleteAction};
+use helix_view::{editor::CompleteAction, editor::SmartTabConfig, graphics::Rect, Editor};
 use tui::layout::Constraint;
 
 pub trait Item: Sync + Send + 'static {
@@ -259,7 +259,10 @@ impl<T: Item + 'static> Component for Menu<T> {
                     supersede_menu: true,
                 })
             )
-            && !matches!(cx.editor.last_completion, Some(CompleteAction::Selected { .. }))
+            && !matches!(
+                cx.editor.last_completion,
+                Some(CompleteAction::Selected { .. })
+            )
         {
             return EventResult::Ignored(None);
         }
