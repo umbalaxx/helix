@@ -10,6 +10,7 @@
     - [View mode](#view-mode)
     - [Goto mode](#goto-mode)
     - [Match mode](#match-mode)
+    - [Case mode](#case-mode)
     - [Window mode](#window-mode)
     - [Space mode](#space-mode)
       - [Popup](#popup)
@@ -71,9 +72,8 @@ Normal mode is the default mode when you launch helix. You can return to it from
 | -----       | -----------                                                          | -------                   |
 | `r`         | Replace with a character                                             | `replace`                 |
 | `R`         | Replace with yanked text                                             | `replace_with_yanked`     |
-| `~`         | Switch case of the selected text                                     | `switch_case`             |
-| `` ` ``     | Set the selected text to lower case                                  | `switch_to_lowercase`     |
-| `` Alt-` `` | Set the selected text to upper case                                  | `switch_to_uppercase`     |
+| `~`         | Switch case of the selected text                                     | `switch_to_alternate_case`|
+| `` ` ``     | Enter [case mode](#case-mode)                                        | N/A                       |
 | `i`         | Insert before selection                                              | `insert_mode`             |
 | `a`         | Insert after selection (append)                                      | `append_mode`             |
 | `I`         | Insert at the start of the line                                      | `insert_at_line_start`    |
@@ -174,6 +174,7 @@ These sub-modes are accessible from normal mode and typically switch back to nor
 | -----    | -----------                                        | -------        |
 | `v`      | Enter [select (extend) mode](#select--extend-mode) | `select_mode`  |
 | `g`      | Enter [goto mode](#goto-mode)                      | N/A            |
+| `` ` ``  | Enter [case mode](#case-mode)                      | N/A            |
 | `m`      | Enter [match mode](#match-mode)                    | N/A            |
 | `:`      | Enter command mode                                 | `command_mode` |
 | `z`      | Enter [view mode](#view-mode)                      | N/A            |
@@ -257,6 +258,24 @@ Please refer to the relevant sections for detailed explanations about [surround]
 | `i` `<object>`   | Select inside textobject                        | `select_textobject_inner`  |
 
 TODO: Mappings for selecting syntax nodes (a superset of `[`).
+
+#### Case mode
+
+Accessed by typing `` ` `` in [normal mode](#normal-mode).
+
+Various commands for changing the case of text in different ways.
+
+| Key | Description                                      | Command                    |
+| ----- | -----------                                      | -------                    |
+| `l` | Switch text to lowercase                         | `switch_to_lowercase`      |
+| `u` | Switch text to UPPERCASE                         | `switch_to_uppercase`       |
+| `p` | Switch text to Pascal Case                        | `switch_to_pascal_case`    |
+| `c` | Switch text to camelCase                          | `switch_to_camel_case`     |
+| `t` | Switch text to Title Case                         | `switch_to_title_case`     |
+| `S` | Switch text to Sentence case                      | `switch_to_sentence_case`  |
+| `s` | Switch text to snake_case                         | `switch_to_snake_case`     |
+| `k` | Switch text to kebab-case                          | `switch_to_kebab_case`     |
+| `a` | Switch text to aLTERNATE cASE                      | `switch_to_alternate_case` |
 
 #### Window mode
 
