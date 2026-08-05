@@ -64,6 +64,8 @@ Be careful though, as hard resetting might lose you features you like, that I en
   (This works with `mi[ ([{}]) ]` and `mim`)
 - Add switch to various cases (snake_case, PascalCase, camelCase, kebab-case, Title Case, Sentence Case)
     - Trigger using "`"  key
+- Add match in (go to ) next/previous character pair with `]` and `[`.
+- Change/Fix the `mi<char>` to use the fallback the same as match in next pair if the current selection is empty
 
 # This fork's changes
 

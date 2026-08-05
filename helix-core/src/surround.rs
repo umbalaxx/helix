@@ -214,6 +214,68 @@ pub fn find_nth_pairs_pos(
     }
 }
 
+/// Finds the next pair of `ch` after `range`.
+pub fn find_next_pairs_pos(text: RopeSlice, ch: char, range: Range) -> Result<(usize, usize)> {
+    find_directional_pairs_pos(text, ch, range, Direction::Forward)
+}
+
+/// Finds the previous pair of `ch` before `range`.
+pub fn find_prev_pairs_pos(text: RopeSlice, ch: char, range: Range) -> Result<(usize, usize)> {
+    find_directional_pairs_pos(text, ch, range, Direction::Backward)
+}
+
+fn find_directional_pairs_pos(
+    text: RopeSlice,
+    ch: char,
+    range: Range,
+    direction: Direction,
+) -> Result<(usize, usize)> {
+    let (open, close) = get_pair(ch);
+    let (open, close) = if match_brackets::is_open_pair(ch) {
+        (open, close)
+    } else {
+        (close, open)
+    };
+    let pos = range.cursor(text);
+
+    if open == close {
+        return match direction {
+            Direction::Forward => {
+                let opening = search::find_nth_char(1, text, open, pos, Direction::Forward)
+                    .ok_or(Error::PairNotFound)?;
+                let closing =
+                    search::find_nth_char(1, text, close, opening + 1, Direction::Forward)
+                        .ok_or(Error::PairNotFound)?;
+                Ok((opening, closing))
+            }
+            Direction::Backward => {
+                let closing = search::find_nth_char(1, text, close, pos, Direction::Backward)
+                    .ok_or(Error::PairNotFound)?;
+                let opening = search::find_nth_char(1, text, open, closing, Direction::Backward)
+                    .ok_or(Error::PairNotFound)?;
+                Ok((closing, opening))
+            }
+        };
+    }
+
+    match direction {
+        Direction::Forward => {
+            let opening = search::find_nth_char(1, text, open, pos, Direction::Forward)
+                .ok_or(Error::PairNotFound)?;
+            let closing =
+                find_nth_close_pair(text, open, close, opening, 1).ok_or(Error::PairNotFound)?;
+            Ok((opening, closing))
+        }
+        Direction::Backward => {
+            let closing = search::find_nth_char(1, text, close, pos, Direction::Backward)
+                .ok_or(Error::PairNotFound)?;
+            let opening =
+                find_nth_open_pair(text, open, close, closing, 1).ok_or(Error::PairNotFound)?;
+            Ok((closing, opening))
+        }
+    }
+}
+
 fn find_nth_open_pair(
     text: RopeSlice,
     open: char,
@@ -444,6 +506,40 @@ mod test {
             find_nth_pairs_pos(None, doc.slice(..), '\'', selection.primary(), 1),
             Err(Error::CursorOnAmbiguousPair)
         )
+    }
+
+    #[test]
+    fn test_directional_pairs_pos() {
+        let doc = Rope::from("before {one} middle {two} after");
+        let text = doc.slice(..);
+
+        assert_eq!(
+            find_next_pairs_pos(text, '{', Range::point(0)).unwrap(),
+            (7, 11)
+        );
+        assert_eq!(
+            find_next_pairs_pos(text, '}', Range::point(13)).unwrap(),
+            (20, 24)
+        );
+        assert_eq!(
+            find_prev_pairs_pos(text, '{', Range::point(26)).unwrap(),
+            (24, 20)
+        );
+        assert_eq!(
+            find_prev_pairs_pos(text, '}', Range::point(13)).unwrap(),
+            (11, 7)
+        );
+    }
+
+    #[test]
+    fn test_directional_pairs_pos_empty_pair() {
+        let doc = Rope::from("before () after");
+        let text = doc.slice(..);
+
+        assert_eq!(
+            find_next_pairs_pos(text, '(', Range::point(0)).unwrap(),
+            (7, 8)
+        );
     }
 
     #[test]
