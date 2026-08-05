@@ -62,6 +62,8 @@ Be careful though, as hard resetting might lose you features you like, that I en
 - Change behavior -> now you can automatically accept the selection, and continue typing and send to LSP correctly
 - Add select next bracket on the same line if it fails to select bracket(s) in the current cursor position
   (This works with `mi[ ([{}]) ]` and `mim`)
+- Add switch to various cases (snake_case, PascalCase, camelCase, kebab-case, Title Case, Sentence Case)
+    - Trigger using "`"  key
 
 # This fork's changes
 
