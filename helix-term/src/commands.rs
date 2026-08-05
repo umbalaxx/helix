@@ -612,6 +612,20 @@ impl MappableCommand {
         surround_delete, "Surround delete",
         select_textobject_around, "Select around object",
         select_textobject_inner, "Select inside object",
+        select_prev_parenthesis, "Select inside previous parentheses",
+        select_next_parenthesis, "Select inside next parentheses",
+        select_prev_curly_bracket, "Select inside previous curly brackets",
+        select_next_curly_bracket, "Select inside next curly brackets",
+        select_prev_square_bracket, "Select inside previous square brackets",
+        select_next_square_bracket, "Select inside next square brackets",
+        select_prev_angle_bracket, "Select inside previous angle brackets",
+        select_next_angle_bracket, "Select inside next angle brackets",
+        select_prev_single_quote, "Select inside previous single quotes",
+        select_next_single_quote, "Select inside next single quotes",
+        select_prev_double_quote, "Select inside previous double quotes",
+        select_next_double_quote, "Select inside next double quotes",
+        select_prev_backtick, "Select inside previous backticks",
+        select_next_backtick, "Select inside next backticks",
         goto_next_function, "Goto next function",
         goto_prev_function, "Goto previous function",
         goto_next_class, "Goto next type definition",
@@ -7378,6 +7392,51 @@ fn select_textobject_around(cx: &mut Context) {
 fn select_textobject_inner(cx: &mut Context) {
     select_textobject(cx, textobject::TextObject::Inside);
 }
+
+fn select_directional_pair(cx: &mut Context, ch: char, direction: Direction) {
+    let count = cx.count();
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        let mut range = range;
+        for _ in 0..count {
+            let pair = match direction {
+                Direction::Forward => surround::find_next_pairs_pos(text, ch, range),
+                Direction::Backward => surround::find_prev_pairs_pos(text, ch, range),
+            };
+            let Ok((anchor, head)) = pair else { break };
+            let (open, close) = (anchor.min(head), anchor.max(head));
+            range = Range::new(next_grapheme_boundary(text, open), close)
+                .with_direction(Direction::Backward);
+        }
+        range
+    });
+    doc.set_selection(view.id, selection);
+}
+
+macro_rules! directional_pair_commands {
+    ($(($prev:ident, $next:ident, $ch:literal)),+ $(,)?) => {
+        $(
+            fn $prev(cx: &mut Context) {
+                select_directional_pair(cx, $ch, Direction::Backward);
+            }
+
+            fn $next(cx: &mut Context) {
+                select_directional_pair(cx, $ch, Direction::Forward);
+            }
+        )+
+    };
+}
+
+directional_pair_commands!(
+    (select_prev_parenthesis, select_next_parenthesis, '('),
+    (select_prev_curly_bracket, select_next_curly_bracket, '{'),
+    (select_prev_square_bracket, select_next_square_bracket, '['),
+    (select_prev_angle_bracket, select_next_angle_bracket, '<'),
+    (select_prev_single_quote, select_next_single_quote, '\''),
+    (select_prev_double_quote, select_next_double_quote, '"'),
+    (select_prev_backtick, select_next_backtick, '`'),
+);
 
 fn textobject_shortcut(ch: char) -> char {
     match ch {
