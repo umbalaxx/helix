@@ -417,6 +417,47 @@ async fn insert_close_inside_pair_multi() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn insert_same_quote_delimiter() -> anyhow::Result<()> {
+    for (quote, _) in matching_pairs() {
+        test((
+            "#[|]#",
+            format!("i{}{}{}", quote, quote, quote),
+            format!(
+                "{}{}{}#[|]#{}{}{}",
+                quote, quote, quote, quote, quote, quote
+            ),
+        ))
+        .await?;
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn insert_same_quote_closer_skips() -> anyhow::Result<()> {
+    for (quote, _) in matching_pairs() {
+        test((
+            format!("{}foo#[|{}]#", quote, quote),
+            format!("i{}", quote),
+            format!("{}foo{}#[|]#", quote, quote),
+        ))
+        .await?;
+
+        test((
+            "#[|]#",
+            format!("i{}{}{}foo{}{}{}", quote, quote, quote, quote, quote, quote),
+            format!(
+                "{}{}{}foo{}{}{}#[|]#",
+                quote, quote, quote, quote, quote, quote
+            ),
+        ))
+        .await?;
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn insert_nested_open_inside_pair() -> anyhow::Result<()> {
     for pair in differing_pairs() {
         test((

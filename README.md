@@ -66,6 +66,8 @@ Be careful though, as hard resetting might lose you features you like, that I en
     - Trigger using "`"  key
 - Add match in (go to ) next/previous character pair with `]` and `[`.
 - Change/Fix the `mi<char>` to use the fallback the same as match in next pair if the current selection is empty
+- Revert back behavior where you can type the closing quotes (`, ", ') and continue typing without typing a new non-closing character
+    - Add new behavior where continue typing quotes in the empty pairs gives you symmetric opening and closing ones, e.g., (`"""..."""`)
 
 # This fork's changes
 
