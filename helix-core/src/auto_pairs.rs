@@ -392,6 +392,34 @@ fn handle_insert_close(doc: &Rope, range: &Range, pair: &Pair) -> Option<(Change
 /// handle cases where open and close is the same, or in triples ("""docstring""")
 fn handle_insert_same(doc: &Rope, range: &Range, pair: &Pair) -> Option<(Change, Range)> {
     let cursor = range.cursor(doc.slice(..));
+
+    // Same-character pairs need a little more than the usual closer skip. When
+    // the cursor is between a run of quotes and its matching run, grow both
+    // sides together. This makes it possible to type triple (or longer)
+    // delimiters without having to manually add the closing side.
+    let left_len = consecutive_chars_before(doc, cursor, pair.open);
+    let right_len = consecutive_chars_after(doc, cursor, pair.close);
+
+    if left_len > 0 && left_len == right_len {
+        let start = cursor - left_len;
+        let end = cursor + right_len;
+        let new_len = left_len + 1;
+
+        let replacement = Tendril::from_iter(
+            std::iter::repeat_n(pair.open, new_len).chain(std::iter::repeat_n(pair.close, new_len)),
+        );
+        let next_range = Range::point(start + new_len);
+
+        return Some(((start, end, Some(replacement)), next_range));
+    }
+
+    // Typing a closer immediately before an existing closer should move past
+    // it instead of inserting a duplicate.
+    if right_len > 0 {
+        let next_range = get_next_range(doc, range, 0);
+        return Some(((cursor, cursor, None), next_range));
+    }
+
     let len_inserted;
 
     let change = {
@@ -410,4 +438,22 @@ fn handle_insert_same(doc: &Rope, range: &Range, pair: &Pair) -> Option<(Change,
     log::debug!("auto pair change: {:#?}", &result);
 
     Some(result)
+}
+
+fn consecutive_chars_before(doc: &Rope, mut pos: usize, ch: char) -> usize {
+    let mut count = 0;
+    while pos > 0 && doc.get_char(pos - 1) == Some(ch) {
+        count += 1;
+        pos -= 1;
+    }
+    count
+}
+
+fn consecutive_chars_after(doc: &Rope, mut pos: usize, ch: char) -> usize {
+    let mut count = 0;
+    while doc.get_char(pos) == Some(ch) {
+        count += 1;
+        pos += 1;
+    }
+    count
 }
