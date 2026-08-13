@@ -1,4 +1,10 @@
 use helix_term::application::Application;
+#[cfg(unix)]
+use helix_view::{clipboard::ClipboardProvider, doc};
+#[cfg(unix)]
+use serde_json::json;
+#[cfg(unix)]
+use tempfile::NamedTempFile;
 
 use super::*;
 
@@ -117,6 +123,56 @@ async fn test_selection_duplication() -> anyhow::Result<()> {
             "},
     ))
     .await?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn delete_and_paste_hash_through_default_clipboard_register() -> anyhow::Result<()> {
+    let clipboard = NamedTempFile::new()?;
+    let clipboard_path = clipboard.path().to_string_lossy().into_owned();
+    let clipboard_provider: ClipboardProvider = serde_json::from_value(json!({
+        "custom": {
+            "yank": {
+                "command": "sh",
+                "args": ["-c", "cat \"$1\"", "sh", clipboard_path.clone()]
+            },
+            "paste": {
+                "command": "sh",
+                "args": ["-c", "cat > \"$1\"", "sh", clipboard_path]
+            },
+            "yank-primary": null,
+            "paste-primary": null
+        }
+    }))?;
+
+    let mut config = test_config();
+    config.editor.default_yank_register = '+';
+    config.editor.clipboard_provider = clipboard_provider;
+
+    let mut app = AppBuilder::new()
+        .with_config(config)
+        .with_input_text("#[#|]#x")
+        .build()?;
+
+    let clipboard_path = clipboard.path().to_owned();
+    let check_clipboard = |_app: &Application| {
+        assert_eq!(std::fs::read_to_string(&clipboard_path).unwrap(), "#");
+        std::fs::write(&clipboard_path, "#different").unwrap();
+    };
+    let check_paste = |app: &Application| {
+        assert_eq!(doc!(app.editor).text(), "x#different");
+    };
+    test_key_sequences(
+        &mut app,
+        vec![
+            (Some("d"), Some(&check_clipboard)),
+            (Some("p"), Some(&check_paste)),
+        ],
+        false,
+    )
+    .await?;
+
     Ok(())
 }
 

@@ -292,7 +292,22 @@ fn contents_are_saved(saved_values: &[String], mut contents: &str) -> bool {
         }
     }
 
-    true
+    contents.is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::contents_are_saved;
+
+    #[test]
+    fn clipboard_contents_containing_hash_match_saved_values() {
+        assert!(contents_are_saved(&["#".into()], "#"));
+    }
+
+    #[test]
+    fn clipboard_contents_with_saved_prefix_do_not_match_saved_values() {
+        assert!(!contents_are_saved(&["#".into()], "#different"));
+    }
 }
 
 // This is a wrapper of an iterator that is both double ended and exact size,

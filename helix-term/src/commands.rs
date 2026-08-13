@@ -6012,9 +6012,15 @@ pub(crate) fn paste(
     paste_type: PasteType,
 ) {
     let Some(values) = editor.registers.read(register, editor) else {
+        log::debug!("Paste skipped: register {register} is unavailable");
         return;
     };
     let values: Vec<_> = values.map(|value| value.to_string()).collect();
+
+    if values.is_empty() {
+        log::debug!("Paste skipped: register {register} is empty");
+        return;
+    }
 
     let (view, doc) = current!(editor);
     paste_impl(&values, doc, view, pos, count, editor.mode, paste_type);
