@@ -32,7 +32,7 @@ async fn insert_whitespace() -> anyhow::Result<()> {
         test((
             format!("{}#[|{}]#", pair.0, pair.1),
             "i ",
-            format!("{} #[| ]#{}", pair.0, pair.1),
+            format!("{} #[|{}]#", pair.0, pair.1),
         ))
         .await?;
     }
@@ -57,9 +57,9 @@ async fn insert_whitespace_multi() -> anyhow::Result<()> {
             "i ",
             format!(
                 indoc! {"\
-                    {open} #[| ]#{close}
+                    {open} #[|{close}]#
                     {open} #(|{open})#{close}{close}
-                    {open}{open} #(| {close}{close})#
+                    {open}{open} #(|{close}{close})#
                     foo #(|\n)#
                 "},
                 open = pair.0,
@@ -89,9 +89,9 @@ async fn append_whitespace_multi() -> anyhow::Result<()> {
             "a ",
             format!(
                 indoc! {"\
-                    #[{open}  |]#{close}
+                    #[{open} {close}|]#
                     #({open} {open}|)#{close}{close}
-                    #({open}{open}  |)#{close}{close}
+                    #({open}{open} {close}|)#{close}
                     #(foo \n|)#
                 "},
                 open = pair.0,
