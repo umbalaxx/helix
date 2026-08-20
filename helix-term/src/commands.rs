@@ -675,6 +675,8 @@ impl MappableCommand {
         replay_macro, "Replay macro",
         command_palette, "Open command palette",
         goto_word, "Jump to a two-character label",
+        flash_jump, "Jump anywhere with a flash",
+        extend_flash_jump, "Extend anywhere with a flash",
         flash_forward, "Jump forward with a flash",
         extend_flash_forward, "Extend forward with a flash",
         flash_backward, "Jump backward with a flash",
@@ -8808,6 +8810,223 @@ fn jump_to_word(cx: &mut Context, behaviour: Movement) {
 struct FlashMatch {
     range: Range,
     label: char,
+}
+
+struct FlashJumpMatch {
+    range: Range,
+    overlay_pos: usize,
+    screen_pos: Position,
+}
+
+fn flash_jump_matches(editor: &mut Editor, input: &str) -> Vec<FlashJumpMatch> {
+    if input.is_empty() {
+        return Vec::new();
+    }
+
+    let (view, doc) = current_ref!(editor);
+    let text = doc.text().slice(..);
+    let query_chars = input.chars().count();
+    let view_offset = doc.view_offset(view.id);
+    let start = text.line_to_char(text.char_to_line(view_offset.anchor));
+    let end = text.line_to_char(view.estimate_last_doc_line(doc) + 1);
+    let max_start = end.min(text.len_chars().saturating_sub(query_chars));
+    let cursor = doc.selection(view.id).primary().cursor(text);
+    let cursor_screen = view.screen_coords_at_pos(doc, text, cursor);
+
+    let mut matches = Vec::new();
+    for pos in start..=max_start {
+        if graphemes::ensure_grapheme_boundary_next(text, pos) != pos {
+            continue;
+        }
+
+        if !text
+            .slice(pos..pos + query_chars)
+            .chars()
+            .eq(input.chars())
+        {
+            continue;
+        }
+
+        let overlay_pos = graphemes::prev_grapheme_boundary(text, pos + query_chars);
+
+        let Some(screen_pos) = view.screen_coords_at_pos(doc, text, overlay_pos) else {
+            continue;
+        };
+
+        matches.push(FlashJumpMatch {
+            range: Range::new(pos, pos + query_chars),
+            overlay_pos,
+            screen_pos,
+        });
+    }
+
+    matches.sort_by_key(|candidate| {
+        let distance = cursor_screen.map_or_else(
+            || candidate.range.from().abs_diff(cursor),
+            |cursor_pos| {
+                cursor_pos
+                    .row
+                    .abs_diff(candidate.screen_pos.row)
+                    + cursor_pos.col.abs_diff(candidate.screen_pos.col) as usize
+            },
+        );
+        let side = usize::from(candidate.range.from() >= cursor);
+        (distance, side, candidate.range.from())
+    });
+    matches
+}
+
+fn flash_jump_overlays(
+    editor: &mut Editor,
+    matches: &[FlashJumpMatch],
+) -> Vec<(usize, char)> {
+    let alphabet = &editor.config().jump_label_alphabet;
+    let (view, doc) = current_ref!(editor);
+    let text = doc.text().slice(..);
+
+    // A label must never also be a possible next query character. Labels win
+    // immediately when pressed, so reserving every continuation character
+    // keeps incremental search unambiguous.
+    let unavailable: HashSet<char> = matches
+        .iter()
+        .filter_map(|candidate| text.get_char(candidate.range.head))
+        .collect();
+    let available_labels: Vec<char> = alphabet
+        .iter()
+        .copied()
+        .filter(|label| !unavailable.contains(label))
+        .collect();
+
+    // Labels are assigned in ripple order. This means that when the alphabet is
+    // exhausted, the closest candidates retain the labels.
+    let mut occupied = HashSet::new();
+    let mut overlays = Vec::new();
+    for candidate in matches {
+        let Some(screen_pos) = view.screen_coords_at_pos(doc, text, candidate.overlay_pos) else {
+            continue;
+        };
+        if !occupied.insert((screen_pos.row, screen_pos.col)) {
+            continue;
+        }
+        let Some(&label) = available_labels.get(overlays.len()) else {
+            break;
+        };
+        overlays.push((candidate.overlay_pos, label));
+    }
+    overlays.sort_unstable_by_key(|&(pos, _)| pos);
+    overlays
+}
+
+fn flash_jump_select(cx: &mut Context, movement: Movement, target: Range) {
+    let (view, doc) = current!(cx.editor);
+    let primary = doc.selection(view.id).primary();
+    let range = if movement == Movement::Extend {
+        Range::new(primary.anchor, target.head)
+    } else {
+        target
+    };
+    let doc_id = doc.id();
+    let view_id = view.id;
+    let doc = doc_mut!(cx.editor, &doc_id);
+    let view = view_mut!(cx.editor, view_id);
+    push_jump(view, doc);
+    doc.remove_jump_labels(view_id);
+    doc.set_selection(view_id, range.into());
+    cx.editor.status_msg = None;
+}
+
+fn flash_jump_cancel(cx: &mut Context, doc_id: DocumentId, view_id: ViewId) {
+    doc_mut!(cx.editor, &doc_id).remove_jump_labels(view_id);
+    cx.editor.status_msg = None;
+}
+
+fn flash_jump_impl(cx: &mut Context, movement: Movement, query: String) {
+    let (view, doc) = current!(cx.editor);
+    let doc_id = doc.id();
+    let view_id = view.id;
+    doc_mut!(cx.editor, &doc_id).remove_jump_labels(view_id);
+    let matches = flash_jump_matches(cx.editor, &query);
+
+    if !query.is_empty() && !matches.is_empty() {
+        let labels = flash_jump_overlays(cx.editor, &matches);
+        let overlays = labels
+            .iter()
+            .map(|&(pos, label)| Overlay::new(pos, label.to_string()))
+            .collect();
+        doc_mut!(cx.editor, &doc_id).set_jump_labels(view_id, overlays);
+    }
+    cx.editor.set_status(format!("flash: {}", query));
+
+    cx.on_next_key(move |cx, event| {
+        let (view, doc) = current!(cx.editor);
+        let doc_id = doc.id();
+        let view_id = view.id;
+        doc_mut!(cx.editor, &doc_id).remove_jump_labels(view_id);
+
+        if event.code == KeyCode::Esc || (event.code == KeyCode::Enter && query.is_empty()) {
+            flash_jump_cancel(cx, doc_id, view_id);
+            return;
+        }
+
+        if event.code == KeyCode::Enter {
+            if let Some(target) = flash_jump_matches(cx.editor, &query)
+                .first()
+                .map(|target| target.range)
+            {
+                flash_jump_select(cx, movement, target);
+            } else {
+                flash_jump_cancel(cx, doc_id, view_id);
+            }
+            return;
+        }
+
+        if event.code == KeyCode::Backspace {
+            if query.is_empty() {
+                flash_jump_cancel(cx, doc_id, view_id);
+                return;
+            }
+            let mut next_query = query.clone();
+            next_query.pop();
+            flash_jump_impl(cx, movement, next_query);
+            return;
+        }
+
+        let key_input = event.char().filter(|_| event.modifiers.is_empty());
+        let Some(key_input) = key_input else {
+            flash_jump_cancel(cx, doc_id, view_id);
+            return;
+        };
+
+        let matches = flash_jump_matches(cx.editor, &query);
+        let labels = flash_jump_overlays(cx.editor, &matches);
+        if let Some((overlay_pos, _)) = labels
+            .iter()
+            .find(|&&(_, label)| label == key_input)
+            .copied()
+        {
+            let target = matches
+                .iter()
+                .find(|candidate| candidate.overlay_pos == overlay_pos)
+                .map(|candidate| candidate.range);
+
+            if let Some(target) = target {
+                flash_jump_select(cx, movement, target);
+                return;
+            }
+        }
+
+        let mut next_query = query;
+        next_query.push(key_input);
+        flash_jump_impl(cx, movement, next_query);
+    });
+}
+
+fn flash_jump(cx: &mut Context) {
+    flash_jump_impl(cx, Movement::Move, String::new());
+}
+
+fn extend_flash_jump(cx: &mut Context) {
+    flash_jump_impl(cx, Movement::Extend, String::new());
 }
 
 #[allow(clippy::too_many_arguments)]
