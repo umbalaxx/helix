@@ -87,6 +87,9 @@ fn show_completion(
     context: HashMap<CompletionProvider, ResponseContext>,
     trigger: Trigger,
 ) {
+    if crate::commands::ai_suggestion_active(compositor) {
+        return;
+    }
     let (view, doc) = current_ref!(editor);
     // check if the completion request is stale.
     //
@@ -295,6 +298,7 @@ pub(super) fn register_hooks(_handlers: &Handlers) {
         } else {
             trigger_auto_completion(event.cx.editor, false);
         }
+        crate::commands::schedule_ai_suggestion(event.cx);
         Ok(())
     });
 }
