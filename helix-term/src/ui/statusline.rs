@@ -1,7 +1,6 @@
 use helix_core::indent::IndentStyle;
 use helix_core::{
-    coords_at_pos, encoding, syntax::QueryMatchIterEvent, unicode::width::UnicodeWidthStr,
-    Position,
+    coords_at_pos, encoding, syntax::QueryMatchIterEvent, unicode::width::UnicodeWidthStr, Position,
 };
 use helix_lsp::lsp::DiagnosticSeverity;
 use helix_view::document::DEFAULT_LANGUAGE_NAME;

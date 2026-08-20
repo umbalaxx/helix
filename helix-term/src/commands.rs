@@ -97,7 +97,10 @@ use std::{
 
 use helix_stdx::Url;
 use once_cell::sync::Lazy;
-use serde::de::{self, Deserialize, Deserializer};
+use serde::{
+    de::{self, Deserializer},
+    Deserialize,
+};
 
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{sinks, BinaryDetection, SearcherBuilder};
@@ -552,6 +555,7 @@ impl MappableCommand {
         keep_primary_selection, "Keep primary selection",
         remove_primary_selection, "Remove primary selection",
         completion, "Invoke completion popup",
+        ai_edit, "Ask Codex to insert or replace text at the primary selection",
         steal_char_above, "Type the character above you",
         steal_char_below, "Type the character below you",
         hover, "Show docs for item under cursor",
@@ -6423,6 +6427,184 @@ pub fn completion(cx: &mut Context) {
     cx.editor
         .handlers
         .trigger_completions(cursor, doc.id(), view.id);
+}
+
+const AI_EDIT_CONTEXT_CHARS: usize = 6_000;
+
+#[derive(Clone)]
+struct AiEditRequest {
+    doc_id: DocumentId,
+    view_id: ViewId,
+    version: i32,
+    start: usize,
+    end: usize,
+    workspace: PathBuf,
+    file_name: String,
+    language: String,
+    before: String,
+    target: String,
+    after: String,
+}
+
+#[derive(Deserialize)]
+struct AiEditResponse {
+    replacement: String,
+}
+
+fn ai_edit(cx: &mut Context) {
+    let (view, doc) = current_ref!(cx.editor);
+    let text = doc.text().slice(..);
+    let range = doc.selection(view.id).primary();
+
+    // Helix represents a plain cursor as a one-grapheme block cursor. Keep
+    // that character outside the replacement range so cursor edits insert
+    // exactly at the cursor, while real selections are replaceable (including
+    // with an empty response).
+    let (start, end) = if range.len() <= 1 {
+        let cursor = range.cursor(text);
+        (cursor, cursor)
+    } else {
+        (range.from(), range.to())
+    };
+    let before_start = start.saturating_sub(AI_EDIT_CONTEXT_CHARS);
+    let after_end = (end + AI_EDIT_CONTEXT_CHARS).min(text.len_chars());
+    let request = AiEditRequest {
+        doc_id: doc.id(),
+        view_id: view.id,
+        version: doc.version(),
+        start,
+        end,
+        workspace: doc.workspace_root().to_path_buf(),
+        file_name: doc
+            .path()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "[scratch buffer]".into()),
+        language: doc.language_name().unwrap_or("text").into(),
+        before: text.slice(before_start..start).to_string(),
+        target: text.slice(start..end).to_string(),
+        after: text.slice(end..after_end).to_string(),
+    };
+
+    let prompt = Prompt::new(
+        "ai-edit: ".into(),
+        None,
+        ui::completers::none,
+        move |cx: &mut compositor::Context, input: &str, event: PromptEvent| {
+            if event != PromptEvent::Validate {
+                return;
+            }
+            if input.trim().is_empty() {
+                cx.editor.set_error("AI edit request cannot be empty");
+                return;
+            }
+
+            let request = request.clone();
+            let instruction = input.to_owned();
+            cx.editor.set_status("AI edit: asking Codex...");
+            cx.jobs.callback(async move {
+                let replacement = run_codex_ai_edit(&request, &instruction).await?;
+                Ok(Callback::EditorCompositor(Box::new(move |editor, _| {
+                    apply_ai_edit(editor, request, replacement);
+                })))
+            });
+        },
+    );
+    cx.push_layer(Box::new(prompt));
+}
+
+async fn run_codex_ai_edit(request: &AiEditRequest, instruction: &str) -> anyhow::Result<String> {
+    use std::process::Stdio;
+    use tokio::process::Command;
+
+    const RESPONSE_SCHEMA: &str = r#"{
+  "type": "object",
+  "properties": { "replacement": { "type": "string" } },
+  "required": ["replacement"],
+  "additionalProperties": false
+}"#;
+
+    let schema = tempfile::NamedTempFile::new()
+        .context("failed to create Codex response schema")?
+        .into_temp_path();
+    std::fs::write(&schema, RESPONSE_SCHEMA).context("failed to write Codex response schema")?;
+    let output = tempfile::NamedTempFile::new()
+        .context("failed to create Codex response file")?
+        .into_temp_path();
+
+    let prompt = format!(
+        "You are a precise in-editor editing engine. Return only JSON that conforms to the supplied schema. \
+         The `replacement` value must be the exact text that replaces <target>. Do not include markdown, \
+         explanations, code fences, or text outside that replacement. An empty replacement deletes a selected target. \
+         You may use the surrounding context to solve the user's request, but never make edits outside <target>.\n\n\
+         File: {file_name}\nLanguage: {language}\n\n\
+         <user-request>\n{instruction}\n</user-request>\n\n\
+         <before>\n{before}\n</before>\n\n\
+         <target>\n{target}\n</target>\n\n\
+         <after>\n{after}\n</after>",
+        file_name = request.file_name,
+        language = request.language,
+        before = request.before,
+        target = request.target,
+        after = request.after,
+    );
+
+    let process = Command::new("codex")
+        .arg("exec")
+        .arg("--ephemeral")
+        .arg("--sandbox")
+        .arg("read-only")
+        .arg("--cd")
+        .arg(&request.workspace)
+        .arg("--output-schema")
+        .arg(&schema)
+        .arg("--output-last-message")
+        .arg(&output)
+        .arg(prompt)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .context("failed to start Codex; install it and run `codex login`")?;
+
+    if !process.status.success() {
+        let stderr = String::from_utf8_lossy(&process.stderr);
+        bail!("Codex request failed: {}", stderr.trim());
+    }
+
+    let response = std::fs::read_to_string(&output).context("Codex returned no edit")?;
+    let response: AiEditResponse =
+        serde_json::from_str(&response).context("Codex returned an invalid edit response")?;
+    Ok(response.replacement)
+}
+
+fn apply_ai_edit(editor: &mut Editor, request: AiEditRequest, replacement: String) {
+    if !editor.tree.contains(request.view_id)
+        || editor.tree.get(request.view_id).doc != request.doc_id
+    {
+        editor.set_error("AI edit discarded because its view was closed or changed documents");
+        return;
+    }
+
+    let view = view_mut!(editor, request.view_id);
+    let doc = doc_mut!(editor, &request.doc_id);
+    if doc.version() != request.version {
+        editor
+            .set_error("AI edit discarded because the document changed while Codex was responding");
+        return;
+    }
+
+    // This deliberately uses the ordinary apply path, rather than a temporary
+    // transaction. It emits didChange for both insertions and deletions, so
+    // the language server stays in lockstep with the document.
+    doc.append_changes_to_history(view);
+    let transaction = Transaction::change(
+        doc.text(),
+        [(request.start, request.end, Some(replacement.into()))].into_iter(),
+    );
+    doc.apply(&transaction, request.view_id);
+    doc.append_changes_to_history(view);
+    editor.set_status("AI edit applied");
 }
 
 fn steal_char_impl(cx: &mut Context, above: bool) {

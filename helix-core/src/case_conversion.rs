@@ -386,8 +386,14 @@ mod tests {
 
     #[test]
     fn test_pascal_case_from_camel_and_snake() {
-        assert_eq!(to_pascal_case("camelCase".chars()).as_ref() as &str, "CamelCase");
-        assert_eq!(to_pascal_case("snake_case".chars()).as_ref() as &str, "SnakeCase");
+        assert_eq!(
+            to_pascal_case("camelCase".chars()).as_ref() as &str,
+            "CamelCase"
+        );
+        assert_eq!(
+            to_pascal_case("snake_case".chars()).as_ref() as &str,
+            "SnakeCase"
+        );
     }
 
     #[test]

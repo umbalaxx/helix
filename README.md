@@ -72,6 +72,7 @@ Be careful though, as hard resetting might lose you features you like, that I en
 - Add `syntax-tree-path` to the statusline so it shows `[Class > my_func]` in the statusline, add `syntax-tree-path` to the `left` or `center` key
 - Add `flash_jump` and `extend_flash_jump` commands that can jump/extend to anywhere in the view port
 - Change behavior of `Esc` when the suggestion popup is active -> it accepts the suggestion
+- Add `ai_edit` command that uses codex CLI as backend to use AI assisted edit inline
 
 # This fork's changes
 

@@ -8,3 +8,12 @@ class TestAbc:
         sum_ = num1 + num2
         self.sum += sum_
         return sum_
+
+    def calculate_sum(self, num1, num2):
+        return num1 + num2
+
+    def divide(self, num1, num2):
+        return num1 / num2
+
+    def multiply(self, num1, num2):
+        return num1 * num2
