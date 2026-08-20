@@ -73,6 +73,16 @@ Be careful though, as hard resetting might lose you features you like, that I en
 - Add `flash_jump` and `extend_flash_jump` commands that can jump/extend to anywhere in the view port
 - Change behavior of `Esc` when the suggestion popup is active -> it accepts the suggestion
 - Add `ai_edit` command that uses codex CLI as backend to use AI assisted edit inline
+- Add `ai_suggest` command that can insert inline ghost text suggestion like Copilot using codex CLI
+- The `ai_suggest` command works as follows:
+    - You can config in the `[editor]` section:
+        auto-ai-suggest = true
+        ai-suggest-delay-ms = 175
+        ai-suggest-context-length = 2000
+    - Press `Tab/Enter` to accept the ghost text
+    - Press `Esc` to cancel the ghost text without leaving the normal mode
+    - When ghost text appears, it takes precedence over popup suggestion box, so popup will disappear.
+      Popup will reappear again when the ghost text is cancelled by `Esc`
 
 # This fork's changes
 

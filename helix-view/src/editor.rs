@@ -336,6 +336,14 @@ pub struct Config {
     pub auto_pairs: AutoPairConfig,
     /// Automatic auto-completion, automatically pop up without user trigger. Defaults to true.
     pub auto_completion: bool,
+    /// Automatically request AI ghost-text suggestions while editing in insert mode. Defaults to true.
+    pub auto_ai_suggest: bool,
+    /// Time in milliseconds to wait after an edit before requesting an automatic AI suggestion.
+    /// Defaults to 175ms.
+    pub ai_suggest_delay_ms: u64,
+    /// Number of characters of document context on each side of the cursor sent to AI suggestions.
+    /// Defaults to 1200.
+    pub ai_suggest_context_length: usize,
     /// Enable filepath completion.
     /// Show files and directories if an existing path at the cursor was recognized,
     /// either absolute or relative to the current opened document or current working directory (if the buffer is not yet saved).
@@ -1321,6 +1329,9 @@ impl Default for Config {
             middle_click_paste: true,
             auto_pairs: AutoPairConfig::default(),
             auto_completion: true,
+            auto_ai_suggest: true,
+            ai_suggest_delay_ms: 175,
+            ai_suggest_context_length: 1_200,
             path_completion: true,
             word_completion: WordCompletion::default(),
             auto_format: true,

@@ -6434,9 +6434,6 @@ pub fn completion(cx: &mut Context) {
 }
 
 const AI_EDIT_CONTEXT_CHARS: usize = 6_000;
-// Suggestions are latency-sensitive. They need enough local context to infer
-// the immediate syntax, but not the larger editing context used by ai_edit.
-const AI_SUGGEST_CONTEXT_CHARS: usize = 2_000;
 
 #[derive(Clone)]
 struct AiEditRequest {
@@ -6665,19 +6662,20 @@ fn apply_ai_edit(editor: &mut Editor, request: AiEditRequest, replacement: Strin
 }
 
 const AI_SUGGESTION_ID: &str = "ai-suggestion";
-const AI_SUGGEST_DEBOUNCE: Duration = Duration::from_millis(500);
 
 pub(crate) fn ai_suggest(cx: &mut Context) {
     request_ai_suggestion(cx, Duration::ZERO, true);
 }
 
 pub(crate) fn schedule_ai_suggestion(cx: &mut Context) {
-    if cx.editor.mode == Mode::Insert {
-        request_ai_suggestion(cx, AI_SUGGEST_DEBOUNCE, false);
+    if cx.editor.mode == Mode::Insert && cx.editor.config().auto_ai_suggest {
+        let delay = Duration::from_millis(cx.editor.config().ai_suggest_delay_ms);
+        request_ai_suggestion(cx, delay, false);
     }
 }
 
 fn request_ai_suggestion(cx: &mut Context, delay: Duration, show_status: bool) {
+    let context_length = cx.editor.config().ai_suggest_context_length;
     let (view, doc) = current!(cx.editor);
     let text = doc.text().slice(..);
     let range = doc.selection(view.id).primary();
@@ -6690,8 +6688,8 @@ fn request_ai_suggestion(cx: &mut Context, delay: Duration, show_status: bool) {
     }
 
     let cursor = range.cursor(text);
-    let before_start = cursor.saturating_sub(AI_SUGGEST_CONTEXT_CHARS);
-    let after_end = (cursor + AI_SUGGEST_CONTEXT_CHARS).min(text.len_chars());
+    let before_start = cursor.saturating_sub(context_length);
+    let after_end = (cursor + context_length).min(text.len_chars());
     let before = text.slice(before_start..cursor).to_string();
     let after = text.slice(cursor..after_end).to_string();
     let (generation, cancellation) = doc.restart_ai_suggestion(view.id);
