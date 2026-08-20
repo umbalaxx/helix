@@ -19,13 +19,14 @@ use helix_core::{
     movement::Direction,
     syntax::{self, OverlayHighlights},
     text_annotations::TextAnnotations,
+    unicode::width::UnicodeWidthStr,
     visual_offset_from_block, Change, Position, Range, Selection,
 };
 use helix_view::{
     annotations::diagnostics::DiagnosticFilter,
     document::{Mode, SCRATCH_BUFFER_NAME},
     editor::{CompleteAction, CursorShapeConfig},
-    graphics::{Color, CursorKind, Rect, Style},
+    graphics::{Color, CursorKind, Modifier, Rect, Style},
     input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     keyboard::{KeyCode, KeyModifiers},
     Document, Editor, Theme, View,
@@ -49,6 +50,7 @@ pub struct EditorView {
     spinners: ProgressSpinners,
     /// Tracks if the terminal window is focused by reaction to terminal focus events
     terminal_focused: bool,
+    syntax_tree_path_cache: statusline::SyntaxTreePathCache,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +76,7 @@ impl EditorView {
             completion: None,
             spinners: ProgressSpinners::default(),
             terminal_focused: true,
+            syntax_tree_path_cache: statusline::SyntaxTreePathCache::default(),
         }
     }
 
@@ -82,7 +85,7 @@ impl EditorView {
     }
 
     pub fn render_view(
-        &self,
+        &mut self,
         editor: &Editor,
         doc: &Document,
         view: &View,
@@ -253,8 +256,20 @@ impl EditorView {
             .clip_top(view.area.height.saturating_sub(1))
             .clip_bottom(1); // -1 from bottom to remove commandline
 
-        let mut context =
-            statusline::RenderContext::new(editor, doc, view, is_focused, &self.spinners);
+        let syntax_tree_path = statusline::syntax_tree_path_cached(
+            editor,
+            doc,
+            view,
+            &mut self.syntax_tree_path_cache,
+        );
+        let mut context = statusline::RenderContext::new(
+            editor,
+            doc,
+            view,
+            is_focused,
+            &self.spinners,
+            syntax_tree_path,
+        );
 
         statusline::render(&mut context, statusline_area, surface);
     }
@@ -1762,7 +1777,7 @@ impl Component for EditorView {
         };
 
         // -1 for commandline and -1 for bufferline
-        let mut editor_area = area.clip_bottom(0);
+        let mut editor_area = area.clip_bottom(1);
         if use_bufferline {
             editor_area = editor_area.clip_top(1);
         }
@@ -1786,8 +1801,12 @@ impl Component for EditorView {
             }
         }
 
+        let key_width = 15u16; // for showing pending keys
+        let mut status_msg_width = 0;
+
         // render status msg
         if let Some((status_msg, severity)) = &cx.editor.status_msg {
+            status_msg_width = status_msg.width();
             use helix_view::editor::Severity;
             let style = if *severity == Severity::Error {
                 cx.editor.theme.get("error")
@@ -1798,9 +1817,64 @@ impl Component for EditorView {
             surface.set_string(
                 area.x,
                 area.y + area.height.saturating_sub(1),
-                &format!("{:<200}", status_msg),
+                status_msg,
                 style,
             );
+        }
+
+        if area.width.saturating_sub(status_msg_width as u16) > key_width {
+            let mut disp = String::new();
+            if let Some(count) = cx.editor.count {
+                disp.push_str(&count.to_string())
+            }
+            for key in self.keymaps.pending() {
+                disp.push_str(&key.key_sequence_format());
+            }
+            for key in &self.pseudo_pending {
+                disp.push_str(&key.key_sequence_format());
+            }
+            let style = cx.editor.theme.get("ui.text");
+            let macro_width = if cx.editor.macro_recording.is_some() {
+                3
+            } else {
+                0
+            };
+            let restricted = workspace_trust_indicator_visible(cx.editor);
+            let trust_width = if restricted { 3 } else { 0 };
+            surface.set_string(
+                area.x
+                    + area
+                        .width
+                        .saturating_sub(key_width + macro_width + trust_width),
+                area.y + area.height.saturating_sub(1),
+                disp.get(disp.len().saturating_sub(key_width as usize)..)
+                    .unwrap_or(&disp),
+                style,
+            );
+            if restricted {
+                let style = style
+                    .fg(helix_view::graphics::Color::Yellow)
+                    .add_modifier(Modifier::BOLD);
+                surface.set_string(
+                    area.x
+                        .saturating_add(area.width.saturating_sub(3 + macro_width)),
+                    area.y + area.height.saturating_sub(1),
+                    "[⚠]",
+                    style,
+                );
+            }
+            if let Some((reg, _)) = cx.editor.macro_recording {
+                let disp = format!("[{}]", reg);
+                let style = style
+                    .fg(helix_view::graphics::Color::Yellow)
+                    .add_modifier(Modifier::BOLD);
+                surface.set_string(
+                    area.x + area.width.saturating_sub(3),
+                    area.y + area.height.saturating_sub(1),
+                    &disp,
+                    style,
+                );
+            }
         }
 
         if let Some(completion) = self.completion.as_mut() {
