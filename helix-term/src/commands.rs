@@ -8816,40 +8816,96 @@ struct FlashJumpMatch {
     range: Range,
     overlay_pos: usize,
     screen_pos: Position,
+    is_line_end: bool,
 }
 
-fn flash_jump_matches(editor: &mut Editor, input: &str) -> Vec<FlashJumpMatch> {
+struct FlashJumpSession {
+    candidate_starts: Vec<usize>,
+    viewport_end: usize,
+    screen_positions: HashMap<usize, Option<Position>>,
+}
+
+impl FlashJumpSession {
+    fn new(editor: &mut Editor) -> Self {
+        let (view, doc) = current_ref!(editor);
+        let text = doc.text().slice(..);
+        let view_offset = doc.view_offset(view.id);
+        let start = graphemes::ensure_grapheme_boundary_next(
+            text,
+            text.line_to_char(text.char_to_line(view_offset.anchor)),
+        );
+        let viewport_end = text.line_to_char(view.estimate_last_doc_line(doc) + 1);
+
+        let mut candidate_starts = Vec::new();
+        let mut pos = start;
+        while pos < viewport_end {
+            candidate_starts.push(pos);
+            let next = graphemes::next_grapheme_boundary(text, pos);
+            if next <= pos {
+                break;
+            }
+            pos = next;
+        }
+
+        Self {
+            candidate_starts,
+            viewport_end,
+            screen_positions: HashMap::new(),
+        }
+    }
+
+    fn screen_pos(
+        &mut self,
+        view: &View,
+        doc: &Document,
+        text: RopeSlice,
+        pos: usize,
+    ) -> Option<Position> {
+        if let Some(&screen_pos) = self.screen_positions.get(&pos) {
+            return screen_pos;
+        }
+
+        let screen_pos = view.screen_coords_at_pos(doc, text, pos);
+        self.screen_positions.insert(pos, screen_pos);
+        screen_pos
+    }
+}
+
+fn flash_jump_matches(
+    editor: &mut Editor,
+    input: &str,
+    session: &mut FlashJumpSession,
+) -> Vec<FlashJumpMatch> {
     if input.is_empty() {
         return Vec::new();
     }
 
     let (view, doc) = current_ref!(editor);
     let text = doc.text().slice(..);
-    let query_chars = input.chars().count();
-    let view_offset = doc.view_offset(view.id);
-    let start = text.line_to_char(text.char_to_line(view_offset.anchor));
-    let end = text.line_to_char(view.estimate_last_doc_line(doc) + 1);
-    let max_start = end.min(text.len_chars().saturating_sub(query_chars));
+    let query: Vec<char> = input.chars().collect();
+    let query_chars = query.len();
     let cursor = doc.selection(view.id).primary().cursor(text);
-    let cursor_screen = view.screen_coords_at_pos(doc, text, cursor);
+    let cursor_line = text.char_to_line(cursor);
+    let cursor_screen = session.screen_pos(view, doc, text, cursor);
 
     let mut matches = Vec::new();
-    for pos in start..=max_start {
-        if graphemes::ensure_grapheme_boundary_next(text, pos) != pos {
+    for index in 0..session.candidate_starts.len() {
+        let pos = session.candidate_starts[index];
+        if pos + query_chars > session.viewport_end {
             continue;
         }
 
         if !text
             .slice(pos..pos + query_chars)
             .chars()
-            .eq(input.chars())
+            .eq(query.iter().copied())
         {
             continue;
         }
 
         let overlay_pos = graphemes::prev_grapheme_boundary(text, pos + query_chars);
 
-        let Some(screen_pos) = view.screen_coords_at_pos(doc, text, overlay_pos) else {
+        let Some(screen_pos) = session.screen_pos(view, doc, text, overlay_pos) else {
             continue;
         };
 
@@ -8857,21 +8913,31 @@ fn flash_jump_matches(editor: &mut Editor, input: &str) -> Vec<FlashJumpMatch> {
             range: Range::new(pos, pos + query_chars),
             overlay_pos,
             screen_pos,
+            is_line_end: text
+                .get_char(pos + query_chars)
+                .is_none_or(|ch| matches!(ch, '\n' | '\r')),
         });
     }
 
     matches.sort_by_key(|candidate| {
-        let distance = cursor_screen.map_or_else(
+        let candidate_line = text.char_to_line(candidate.range.from());
+        let line_distance = candidate_line.abs_diff(cursor_line);
+        // Keep the current line first, then ripple across adjacent document
+        // lines. Within each line tier, end-of-line matches are promoted so
+        // they remain reachable even with a limited label alphabet.
+        let line_side = usize::from(candidate_line > cursor_line);
+        let end_of_line = usize::from(!candidate.is_line_end);
+        let column_distance = cursor_screen.map_or_else(
             || candidate.range.from().abs_diff(cursor),
-            |cursor_pos| {
-                cursor_pos
-                    .row
-                    .abs_diff(candidate.screen_pos.row)
-                    + cursor_pos.col.abs_diff(candidate.screen_pos.col) as usize
-            },
+            |cursor_pos| cursor_pos.col.abs_diff(candidate.screen_pos.col) as usize,
         );
-        let side = usize::from(candidate.range.from() >= cursor);
-        (distance, side, candidate.range.from())
+        (
+            line_distance,
+            line_side,
+            end_of_line,
+            column_distance,
+            candidate.range.from(),
+        )
     });
     matches
 }
@@ -8881,7 +8947,7 @@ fn flash_jump_overlays(
     matches: &[FlashJumpMatch],
 ) -> Vec<(usize, char)> {
     let alphabet = &editor.config().jump_label_alphabet;
-    let (view, doc) = current_ref!(editor);
+    let (_, doc) = current_ref!(editor);
     let text = doc.text().slice(..);
 
     // A label must never also be a possible next query character. Labels win
@@ -8902,10 +8968,7 @@ fn flash_jump_overlays(
     let mut occupied = HashSet::new();
     let mut overlays = Vec::new();
     for candidate in matches {
-        let Some(screen_pos) = view.screen_coords_at_pos(doc, text, candidate.overlay_pos) else {
-            continue;
-        };
-        if !occupied.insert((screen_pos.row, screen_pos.col)) {
+        if !occupied.insert((candidate.screen_pos.row, candidate.screen_pos.col)) {
             continue;
         }
         let Some(&label) = available_labels.get(overlays.len()) else {
@@ -8948,21 +9011,29 @@ fn flash_jump_cancel(cx: &mut Context, doc_id: DocumentId, view_id: ViewId) {
     cx.editor.status_msg = None;
 }
 
-fn flash_jump_impl(cx: &mut Context, movement: Movement, query: String) {
+fn flash_jump_impl(
+    cx: &mut Context,
+    movement: Movement,
+    query: String,
+    mut session: FlashJumpSession,
+) {
     let (view, doc) = current!(cx.editor);
     let doc_id = doc.id();
     let view_id = view.id;
     doc_mut!(cx.editor, &doc_id).remove_jump_labels(view_id);
-    let matches = flash_jump_matches(cx.editor, &query);
+    let matches = flash_jump_matches(cx.editor, &query, &mut session);
 
-    if !query.is_empty() && !matches.is_empty() {
+    let labels = if !query.is_empty() && !matches.is_empty() {
         let labels = flash_jump_overlays(cx.editor, &matches);
         let overlays = labels
             .iter()
             .map(|&(pos, label)| Overlay::new(pos, label.to_string()))
             .collect();
         doc_mut!(cx.editor, &doc_id).set_jump_labels(view_id, overlays);
-    }
+        labels
+    } else {
+        Vec::new()
+    };
     let prompt = if movement == Movement::Extend {
         "extend-flash"
     } else {
@@ -8982,8 +9053,10 @@ fn flash_jump_impl(cx: &mut Context, movement: Movement, query: String) {
         }
 
         if event.code == KeyCode::Enter {
-            if let Some(target) = flash_jump_matches(cx.editor, &query)
-                .first()
+            if let Some(target) = matches
+                .iter()
+                .find(|target| target.is_line_end)
+                .or_else(|| matches.first())
                 .map(|target| target.range)
             {
                 flash_jump_select(cx, movement, target);
@@ -9000,7 +9073,7 @@ fn flash_jump_impl(cx: &mut Context, movement: Movement, query: String) {
             }
             let mut next_query = query.clone();
             next_query.pop();
-            flash_jump_impl(cx, movement, next_query);
+            flash_jump_impl(cx, movement, next_query, session);
             return;
         }
 
@@ -9010,8 +9083,6 @@ fn flash_jump_impl(cx: &mut Context, movement: Movement, query: String) {
             return;
         };
 
-        let matches = flash_jump_matches(cx.editor, &query);
-        let labels = flash_jump_overlays(cx.editor, &matches);
         if let Some((overlay_pos, _)) = labels
             .iter()
             .find(|&&(_, label)| label == key_input)
@@ -9030,16 +9101,18 @@ fn flash_jump_impl(cx: &mut Context, movement: Movement, query: String) {
 
         let mut next_query = query;
         next_query.push(key_input);
-        flash_jump_impl(cx, movement, next_query);
+        flash_jump_impl(cx, movement, next_query, session);
     });
 }
 
 fn flash_jump(cx: &mut Context) {
-    flash_jump_impl(cx, Movement::Move, String::new());
+    let session = FlashJumpSession::new(cx.editor);
+    flash_jump_impl(cx, Movement::Move, String::new(), session);
 }
 
 fn extend_flash_jump(cx: &mut Context) {
-    flash_jump_impl(cx, Movement::Extend, String::new());
+    let session = FlashJumpSession::new(cx.editor);
+    flash_jump_impl(cx, Movement::Extend, String::new(), session);
 }
 
 #[allow(clippy::too_many_arguments)]
