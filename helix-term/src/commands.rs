@@ -8963,7 +8963,12 @@ fn flash_jump_impl(cx: &mut Context, movement: Movement, query: String) {
             .collect();
         doc_mut!(cx.editor, &doc_id).set_jump_labels(view_id, overlays);
     }
-    cx.editor.set_status(format!("flash: {}", query));
+    let prompt = if movement == Movement::Extend {
+        "extend-flash"
+    } else {
+        "flash"
+    };
+    cx.editor.set_status(format!("{prompt}: {query}"));
 
     cx.on_next_key(move |cx, event| {
         let (view, doc) = current!(cx.editor);
