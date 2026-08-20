@@ -50,6 +50,7 @@ pub struct EditorView {
     spinners: ProgressSpinners,
     /// Tracks if the terminal window is focused by reaction to terminal focus events
     terminal_focused: bool,
+    syntax_tree_path_cache: statusline::SyntaxTreePathCache,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +76,7 @@ impl EditorView {
             completion: None,
             spinners: ProgressSpinners::default(),
             terminal_focused: true,
+            syntax_tree_path_cache: statusline::SyntaxTreePathCache::default(),
         }
     }
 
@@ -83,7 +85,7 @@ impl EditorView {
     }
 
     pub fn render_view(
-        &self,
+        &mut self,
         editor: &Editor,
         doc: &Document,
         view: &View,
@@ -254,8 +256,20 @@ impl EditorView {
             .clip_top(view.area.height.saturating_sub(1))
             .clip_bottom(1); // -1 from bottom to remove commandline
 
-        let mut context =
-            statusline::RenderContext::new(editor, doc, view, is_focused, &self.spinners);
+        let syntax_tree_path = statusline::syntax_tree_path_cached(
+            editor,
+            doc,
+            view,
+            &mut self.syntax_tree_path_cache,
+        );
+        let mut context = statusline::RenderContext::new(
+            editor,
+            doc,
+            view,
+            is_focused,
+            &self.spinners,
+            syntax_tree_path,
+        );
 
         statusline::render(&mut context, statusline_area, surface);
     }

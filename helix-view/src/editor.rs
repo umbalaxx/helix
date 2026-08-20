@@ -930,6 +930,9 @@ pub enum StatusLineElement {
     CodeActionHint,
     /// Search index and count
     SearchPosition,
+
+    /// The enclosing syntax-tree definitions, such as a class and function
+    SyntaxTreePath,
 }
 
 // Cursor shape is read and used on every rendered frame and so needs

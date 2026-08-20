@@ -1,12 +1,15 @@
 use helix_core::indent::IndentStyle;
-use helix_core::{coords_at_pos, encoding, unicode::width::UnicodeWidthStr, Position};
+use helix_core::{
+    coords_at_pos, encoding, syntax::QueryMatchIterEvent, unicode::width::UnicodeWidthStr,
+    Position,
+};
 use helix_lsp::lsp::DiagnosticSeverity;
 use helix_view::document::DEFAULT_LANGUAGE_NAME;
 use helix_view::{
     document::{Mode, SearchMatch, SearchMatchLimit, SCRATCH_BUFFER_NAME},
     graphics::Rect,
     theme::Style,
-    Document, Editor, View,
+    Document, Editor, View, ViewId,
 };
 
 use crate::ui::ProgressSpinners;
@@ -21,6 +24,7 @@ pub struct RenderContext<'a> {
     pub view: &'a View,
     pub focused: bool,
     pub spinners: &'a ProgressSpinners,
+    pub syntax_tree_path: Option<String>,
     pub parts: RenderBuffer<'a>,
 }
 
@@ -31,6 +35,7 @@ impl<'a> RenderContext<'a> {
         view: &'a View,
         focused: bool,
         spinners: &'a ProgressSpinners,
+        syntax_tree_path: Option<String>,
     ) -> Self {
         RenderContext {
             editor,
@@ -38,6 +43,7 @@ impl<'a> RenderContext<'a> {
             view,
             focused,
             spinners,
+            syntax_tree_path,
             parts: RenderBuffer::default(),
         }
     }
@@ -160,7 +166,184 @@ where
         helix_view::editor::StatusLineElement::CurrentWorkingDirectory => render_cwd,
         helix_view::editor::StatusLineElement::CodeActionHint => render_code_action_hint,
         helix_view::editor::StatusLineElement::SearchPosition => render_search_position,
+        helix_view::editor::StatusLineElement::SyntaxTreePath => render_syntax_tree_path,
     }
+}
+
+fn render_syntax_tree_path<'a, F>(context: &mut RenderContext<'a>, write: F)
+where
+    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
+{
+    let Some(path) = context.syntax_tree_path.as_ref() else {
+        return;
+    };
+
+    write(context, Span::raw(format!(" [{path}] ")));
+}
+
+#[derive(Default)]
+pub struct SyntaxTreePathCache {
+    key: Option<(ViewId, i32, usize)>,
+    value: Option<String>,
+}
+
+pub fn syntax_tree_path_cached(
+    editor: &Editor,
+    doc: &Document,
+    view: &View,
+    cache: &mut SyntaxTreePathCache,
+) -> Option<String> {
+    let text = doc.text().slice(..);
+    let cursor = doc.selection(view.id).primary().cursor(text);
+    let key = (view.id, doc.version(), cursor);
+    if cache.key == Some(key) {
+        return cache.value.clone();
+    }
+
+    let value = syntax_tree_path(editor, doc, cursor);
+    cache.key = Some(key);
+    cache.value = value.clone();
+    value
+}
+
+fn syntax_tree_path(editor: &Editor, doc: &Document, cursor: usize) -> Option<String> {
+    let syntax = doc.syntax()?;
+    let text = doc.text().slice(..);
+    let cursor_byte = text.char_to_byte(cursor) as u32;
+    let loader = editor.syn_loader.load();
+    let mut tags = syntax.tags(text, &loader, ..);
+    let is_markdown = doc.language_name() == Some("markdown");
+    let mut definitions = Vec::new();
+
+    while let Some(event) = tags.next() {
+        let QueryMatchIterEvent::Match(mat) = event else {
+            continue;
+        };
+        let Some(query) = loader.tag_query(tags.current_language()) else {
+            continue;
+        };
+        let name_capture = query.query.get_capture("name");
+        let mut definition = None;
+        let mut name = None;
+
+        for captured in &mat.nodes {
+            let capture_name = query.query.capture_name(captured.capture);
+            if let Some(kind) = capture_name.strip_prefix("definition.") {
+                if is_path_definition(kind) {
+                    definition = Some((kind, captured.node.clone()));
+                }
+            } else if name_capture == Some(captured.capture) {
+                name = Some(captured.node.clone());
+            }
+        }
+
+        let Some((kind, definition_node)) = definition else {
+            continue;
+        };
+        let name_node = name.unwrap_or_else(|| definition_node.clone());
+        let name_range = name_node.byte_range();
+        let name_start = text.byte_to_char(name_range.start as usize);
+        let name_end = text.byte_to_char(name_range.end as usize);
+        let name = text.slice(name_start..name_end).to_string();
+        let range = definition_node.byte_range();
+
+        if is_markdown && kind == "section" {
+            if range.start <= cursor_byte {
+                definitions.push(Definition {
+                    name,
+                    start: range.start,
+                    end: range.end,
+                    level: markdown_heading_level(&definition_node),
+                });
+            }
+        } else if !is_markdown && range.start <= cursor_byte && cursor_byte <= range.end {
+            definitions.push(Definition {
+                name,
+                start: range.start,
+                end: range.end,
+                level: 0,
+            });
+        }
+    }
+
+    if is_markdown {
+        return markdown_path(definitions);
+    }
+
+    definitions.sort_by_key(|definition| (definition.start, std::cmp::Reverse(definition.end)));
+    definitions.dedup_by(|a, b| a.start == b.start && a.end == b.end && a.name == b.name);
+    let path = definitions
+        .into_iter()
+        .map(|definition| definition.name)
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>();
+    (!path.is_empty()).then(|| path.join(" > "))
+}
+
+struct Definition {
+    name: String,
+    start: u32,
+    end: u32,
+    level: usize,
+}
+
+fn is_path_definition(kind: &str) -> bool {
+    matches!(
+        kind,
+        "class"
+            | "enum"
+            | "function"
+            | "interface"
+            | "macro"
+            | "method"
+            | "module"
+            | "namespace"
+            | "section"
+            | "struct"
+            | "type"
+    )
+}
+
+fn markdown_heading_level(node: &helix_core::tree_sitter::Node<'_>) -> usize {
+    for index in 0..node.named_child_count() {
+        let Some(child) = node.named_child(index) else {
+            continue;
+        };
+        let kind = child.kind();
+        if let Some(level) = kind
+            .strip_prefix("atx_h")
+            .and_then(|kind| kind.strip_suffix("_marker")?.parse().ok())
+        {
+            return level;
+        }
+        if kind == "setext_h1_underline" {
+            return 1;
+        }
+        if kind == "setext_h2_underline" {
+            return 2;
+        }
+    }
+    1
+}
+
+fn markdown_path(mut definitions: Vec<Definition>) -> Option<String> {
+    definitions.sort_by_key(|definition| definition.start);
+    let mut path = Vec::new();
+    for definition in definitions {
+        while path
+            .last()
+            .is_some_and(|(level, _): &(usize, String)| *level >= definition.level)
+        {
+            path.pop();
+        }
+        path.push((definition.level, definition.name));
+    }
+    let path = path
+        .into_iter()
+        .map(|(_, name)| name)
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>();
+    (!path.is_empty()).then(|| path.join(" > "))
 }
 
 fn render_mode<'a, F>(context: &mut RenderContext<'a>, write: F)
