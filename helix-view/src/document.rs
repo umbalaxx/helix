@@ -12,7 +12,7 @@ use helix_core::encoding::Encoding;
 use helix_core::snippets::{ActiveSnippet, SnippetRenderCtx};
 use helix_core::syntax::config::LanguageServerFeature;
 use helix_core::text_annotations::{InlineAnnotation, Overlay};
-use helix_event::TaskController;
+use helix_event::{TaskController, TaskHandle};
 use helix_lsp::util::lsp_pos_to_pos;
 use helix_stdx::faccess::{copy_metadata, readonly};
 use helix_vcs::{DiffHandle, DiffProviderRegistry};
@@ -169,6 +169,12 @@ pub struct Document {
     pub(crate) inlay_hints: HashMap<ViewId, DocumentInlayHints>,
     /// Jump label overlays for each view.
     pub(crate) jump_labels: HashMap<ViewId, Vec<Overlay>>,
+    /// Insert-only AI suggestion annotations for each view.
+    pub(crate) ai_suggestions: HashMap<ViewId, Vec<InlineAnnotation>>,
+    /// Monotonically increasing request identifier for each view's AI suggestion.
+    ai_suggestion_generations: HashMap<ViewId, u64>,
+    /// Cancels the in-flight or delayed AI suggestion request for each view.
+    ai_suggestion_controllers: HashMap<ViewId, TaskController>,
     /// LSP document highlights for each view, stored as char ranges.
     pub(crate) document_highlights: HashMap<ViewId, DocumentHighlights>,
     /// LSP code action hints for each view.
@@ -786,6 +792,9 @@ impl Document {
             focused_at: std::time::Instant::now(),
             readonly: false,
             jump_labels: HashMap::new(),
+            ai_suggestions: HashMap::new(),
+            ai_suggestion_generations: HashMap::new(),
+            ai_suggestion_controllers: HashMap::new(),
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
             color_swatches: None,
@@ -1473,6 +1482,9 @@ impl Document {
         self.view_data.remove(&view_id);
         self.inlay_hints.remove(&view_id);
         self.jump_labels.remove(&view_id);
+        self.ai_suggestions.remove(&view_id);
+        self.ai_suggestion_generations.remove(&view_id);
+        self.ai_suggestion_controllers.remove(&view_id);
         self.document_highlights.remove(&view_id);
         self.document_highlight_controllers.remove(&view_id);
         self.code_action_hints.remove(&view_id);
@@ -1510,6 +1522,17 @@ impl Document {
 
         self.modified_since_accessed = true;
         self.version += 1;
+
+        // AI suggestions are virtual text anchored at a cursor position. Any
+        // real document edit invalidates them, rather than allowing an old
+        // suggestion to be displayed at a shifted position.
+        self.ai_suggestions.clear();
+        for generation in self.ai_suggestion_generations.values_mut() {
+            *generation = generation.wrapping_add(1);
+        }
+        for controller in self.ai_suggestion_controllers.values_mut() {
+            controller.cancel();
+        }
 
         for selection in self.selections.values_mut() {
             *selection = selection
@@ -2451,6 +2474,38 @@ impl Document {
 
     pub fn remove_jump_labels(&mut self, view_id: ViewId) {
         self.jump_labels.remove(&view_id);
+    }
+
+    /// Starts a new AI suggestion request, invalidating any older response or
+    /// displayed suggestion for this view.
+    pub fn restart_ai_suggestion(&mut self, view_id: ViewId) -> (u64, TaskHandle) {
+        self.ai_suggestions.remove(&view_id);
+        let generation = self.ai_suggestion_generations.entry(view_id).or_default();
+        *generation = generation.wrapping_add(1);
+        let handle = self
+            .ai_suggestion_controllers
+            .entry(view_id)
+            .or_default()
+            .restart();
+        (*generation, handle)
+    }
+
+    pub fn ai_suggestion_generation(&self, view_id: ViewId) -> Option<u64> {
+        self.ai_suggestion_generations.get(&view_id).copied()
+    }
+
+    pub fn set_ai_suggestion(&mut self, view_id: ViewId, suggestion: InlineAnnotation) {
+        self.ai_suggestions.insert(view_id, vec![suggestion]);
+    }
+
+    pub fn cancel_ai_suggestion(&mut self, view_id: ViewId) {
+        self.ai_suggestions.remove(&view_id);
+        if let Some(generation) = self.ai_suggestion_generations.get_mut(&view_id) {
+            *generation = generation.wrapping_add(1);
+        }
+        if let Some(controller) = self.ai_suggestion_controllers.get_mut(&view_id) {
+            controller.cancel();
+        }
     }
 
     pub fn set_document_highlights(

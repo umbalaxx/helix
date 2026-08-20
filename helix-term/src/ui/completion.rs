@@ -1,11 +1,12 @@
 use crate::handlers::completion::LspCompletionItem;
 use crate::ui::{menu, Markdown, Menu, Popup, PromptEvent};
 use crate::{
-    ctrl, key,
     compositor::{Component, Context, Event, EventResult},
+    ctrl,
     handlers::completion::{
         trigger_auto_completion, CompletionItem, CompletionResponse, ResolveHandler,
     },
+    key,
 };
 use helix_core::snippets::{ActiveSnippet, RenderedSnippet, Snippet};
 use helix_core::{self as core, chars, fuzzy::MATCHER, Change, Transaction};

@@ -90,6 +90,7 @@ rand = "0.8.5"
 axleharp = "3.1.0"
 
 parking_lot.workspace = true
+tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 crossterm = { version = "0.28", features = ["event-stream"] }

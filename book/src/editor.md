@@ -43,6 +43,9 @@
 | `continue-comments` | if helix should automatically add a line comment token if you create a new line inside a comment. | `true` |
 | `gutters` | Gutters to display: Available are `diagnostics` and `diff` and `line-numbers` and `spacer` and `code-action-hint`, note that `diagnostics` also includes other features like breakpoints, 1-width padding will be inserted if gutters is non-empty | `["diagnostics", "spacer", "line-numbers", "spacer", "diff"]` |
 | `auto-completion` | Enable automatic pop up of auto-completion | `true` |
+| `auto-ai-suggest` | Automatically request AI ghost-text suggestions while editing in insert mode. Manual `:ai_suggest` remains available when disabled. | `true` |
+| `ai-suggest-delay-ms` | Time in milliseconds to wait after an edit before requesting an automatic AI suggestion. | `175` |
+| `ai-suggest-context-length` | Number of characters of document context sent before and after the cursor for AI suggestions. | `1200` |
 | `path-completion` | Enable filepath completion. Show files and directories if an existing path at the cursor was recognized, either absolute or relative to the current opened document or current working directory (if the buffer is not yet saved). Defaults to true. | `true` |
 | `auto-format` | Enable automatic formatting on save[^3] | `true` |
 | `idle-timeout` | Time in milliseconds since last keypress before idle timers trigger. | `250` |

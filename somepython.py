@@ -1,4 +1,4 @@
-class TestAbc:
+class Calculator:
     def __init__(self, param1, param2):
         self.param1 = param1
         self.param2 = param2
@@ -8,3 +8,24 @@ class TestAbc:
         sum_ = num1 + num2
         self.sum += sum_
         return sum_
+
+    def calculate_sum(self, num1, num2):
+        return num1 + num2
+
+    def divide(self, num1, num2):
+        return num1 / num2
+
+    def subtract(self, num1, num2):
+        return num1 - num2
+
+    def multiply(self, num1, num2):
+        return num1 * num2
+
+    def reset(self):
+        self.sum = 0
+
+    def get_sum(self):
+        return self.sum
+
+    def power(self, num1, num2):
+        return num1**num2
