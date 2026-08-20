@@ -71,6 +71,7 @@ Be careful though, as hard resetting might lose you features you like, that I en
 - Bring back the old statusline and command bar separately, so we can see what we type during the command (e.g., numeric counts, pending commands)
 - Add `syntax-tree-path` to the statusline so it shows `[Class > my_func]` in the statusline, add `syntax-tree-path` to the `left` or `center` key
 - Add `flash_jump` and `extend_flash_jump` commands that can jump/extend to anywhere in the view port
+- Change behavior of `Esc` when the suggestion popup is active -> it accepts the suggestion
 
 # This fork's changes
 

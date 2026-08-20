@@ -1,6 +1,7 @@
 use crate::handlers::completion::LspCompletionItem;
 use crate::ui::{menu, Markdown, Menu, Popup, PromptEvent};
 use crate::{
+    ctrl, key,
     compositor::{Component, Context, Event, EventResult},
     handlers::completion::{
         trigger_auto_completion, CompletionItem, CompletionResponse, ResolveHandler,
@@ -463,7 +464,16 @@ impl Completion {
 
 impl Component for Completion {
     fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
-        self.popup.handle_event(event, cx)
+        // Completion previews are temporary transactions. Accepting through the
+        // normal validation path turns them into regular document edits and
+        // keeps the language server in sync, so Esc/Ctrl-C intentionally behave
+        // like Enter while this popup has focus.
+        match event {
+            Event::Key(event) if *event == key!(Esc) || *event == ctrl!('c') => {
+                self.popup.handle_event(&Event::Key(key!(Enter)), cx)
+            }
+            _ => self.popup.handle_event(event, cx),
+        }
     }
 
     fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {
