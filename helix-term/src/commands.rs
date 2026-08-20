@@ -8921,7 +8921,15 @@ fn flash_jump_select(cx: &mut Context, movement: Movement, target: Range) {
     let (view, doc) = current!(cx.editor);
     let primary = doc.selection(view.id).primary();
     let range = if movement == Movement::Extend {
-        Range::new(primary.anchor, target.head)
+        // Ranges are left-inclusive and right-exclusive. When extending to a
+        // target before the anchor, use the match start so the labeled
+        // character (and the rest of a multi-character query) is included.
+        let head = if target.head <= primary.anchor {
+            target.anchor
+        } else {
+            target.head
+        };
+        Range::new(primary.anchor, head)
     } else {
         target
     };
