@@ -459,6 +459,11 @@ impl View {
             text_annotations.add_overlay(labels, style);
         }
 
+        if let Some(suggestion) = doc.ai_suggestions.get(&self.id) {
+            let style = theme.and_then(|t| t.find_highlight("ui.virtual.inlay-hint"));
+            text_annotations.add_inline_annotations(suggestion, style);
+        }
+
         if let Some(DocumentInlayHints {
             id: _,
             type_inlay_hints,

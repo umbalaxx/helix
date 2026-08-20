@@ -15,5 +15,17 @@ class Calculator:
     def divide(self, num1, num2):
         return num1 / num2
 
+    def subtract(self, num1, num2):
+        return num1 - num2
+
     def multiply(self, num1, num2):
         return num1 * num2
+
+    def reset(self):
+        self.sum = 0
+
+    def get_sum(self):
+        return self.sum
+
+    def power(self, num1, num2):
+        return num1**num2

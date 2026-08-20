@@ -48,7 +48,7 @@ use helix_core::{
     search::{self},
     selection, surround,
     syntax::config::{BlockCommentToken, LanguageServerFeature},
-    text_annotations::{Overlay, TextAnnotations},
+    text_annotations::{InlineAnnotation, Overlay, TextAnnotations},
     textobject,
     unicode::width::UnicodeWidthChar,
     visual_offset_from_block, Deletion, LineEnding, Position, Range, Rope, RopeReader, RopeSlice,
@@ -73,8 +73,9 @@ use insert::*;
 
 use crate::{
     compositor::{self, Component, Compositor},
-    filter_picker_entry,
+    ctrl, filter_picker_entry,
     job::Callback,
+    key,
     ui::{self, overlay::overlaid, Picker, PickerColumn, Popup, Prompt, PromptEvent},
 };
 
@@ -556,6 +557,7 @@ impl MappableCommand {
         remove_primary_selection, "Remove primary selection",
         completion, "Invoke completion popup",
         ai_edit, "Ask Codex to insert or replace text at the primary selection",
+        ai_suggest, "Ask Codex for an insert-only ghost text suggestion",
         steal_char_above, "Type the character above you",
         steal_char_below, "Type the character below you",
         hover, "Show docs for item under cursor",
@@ -6430,6 +6432,9 @@ pub fn completion(cx: &mut Context) {
 }
 
 const AI_EDIT_CONTEXT_CHARS: usize = 6_000;
+// Suggestions are latency-sensitive. They need enough local context to infer
+// the immediate syntax, but not the larger editing context used by ai_edit.
+const AI_SUGGEST_CONTEXT_CHARS: usize = 2_000;
 
 #[derive(Clone)]
 struct AiEditRequest {
@@ -6449,6 +6454,25 @@ struct AiEditRequest {
 #[derive(Deserialize)]
 struct AiEditResponse {
     replacement: String,
+}
+
+#[derive(Clone)]
+struct AiSuggestRequest {
+    doc_id: DocumentId,
+    view_id: ViewId,
+    version: i32,
+    generation: u64,
+    cursor: usize,
+    workspace: PathBuf,
+    file_name: String,
+    language: String,
+    before: String,
+    after: String,
+}
+
+#[derive(Deserialize)]
+struct AiSuggestResponse {
+    suggestion: String,
 }
 
 fn ai_edit(cx: &mut Context) {
@@ -6513,23 +6537,12 @@ fn ai_edit(cx: &mut Context) {
 }
 
 async fn run_codex_ai_edit(request: &AiEditRequest, instruction: &str) -> anyhow::Result<String> {
-    use std::process::Stdio;
-    use tokio::process::Command;
-
     const RESPONSE_SCHEMA: &str = r#"{
   "type": "object",
   "properties": { "replacement": { "type": "string" } },
   "required": ["replacement"],
   "additionalProperties": false
 }"#;
-
-    let schema = tempfile::NamedTempFile::new()
-        .context("failed to create Codex response schema")?
-        .into_temp_path();
-    std::fs::write(&schema, RESPONSE_SCHEMA).context("failed to write Codex response schema")?;
-    let output = tempfile::NamedTempFile::new()
-        .context("failed to create Codex response file")?
-        .into_temp_path();
 
     let prompt = format!(
         "You are a precise in-editor editing engine. Return only JSON that conforms to the supplied schema. \
@@ -6548,18 +6561,51 @@ async fn run_codex_ai_edit(request: &AiEditRequest, instruction: &str) -> anyhow
         after = request.after,
     );
 
-    let process = Command::new("codex")
+    let response = run_codex_request(&request.workspace, RESPONSE_SCHEMA, prompt, None).await?;
+    let response: AiEditResponse =
+        serde_json::from_str(&response).context("Codex returned an invalid edit response")?;
+    Ok(response.replacement)
+}
+
+async fn run_codex_request(
+    workspace: &Path,
+    response_schema: &str,
+    prompt: String,
+    reasoning_effort: Option<&str>,
+) -> anyhow::Result<String> {
+    use std::process::Stdio;
+    use tokio::process::Command;
+
+    let schema = tempfile::NamedTempFile::new()
+        .context("failed to create Codex response schema")?
+        .into_temp_path();
+    std::fs::write(&schema, response_schema).context("failed to write Codex response schema")?;
+    let output = tempfile::NamedTempFile::new()
+        .context("failed to create Codex response file")?
+        .into_temp_path();
+
+    let mut command = Command::new("codex");
+    command
         .arg("exec")
         .arg("--ephemeral")
         .arg("--sandbox")
         .arg("read-only")
         .arg("--cd")
-        .arg(&request.workspace)
+        .arg(workspace)
         .arg("--output-schema")
         .arg(&schema)
         .arg("--output-last-message")
-        .arg(&output)
-        .arg(prompt)
+        .arg(&output);
+
+    if let Some(reasoning_effort) = reasoning_effort {
+        command
+            .arg("-c")
+            .arg(format!("model_reasoning_effort={reasoning_effort:?}"));
+    }
+
+    command.arg(prompt);
+
+    let process = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -6572,10 +6618,7 @@ async fn run_codex_ai_edit(request: &AiEditRequest, instruction: &str) -> anyhow
         bail!("Codex request failed: {}", stderr.trim());
     }
 
-    let response = std::fs::read_to_string(&output).context("Codex returned no edit")?;
-    let response: AiEditResponse =
-        serde_json::from_str(&response).context("Codex returned an invalid edit response")?;
-    Ok(response.replacement)
+    std::fs::read_to_string(&output).context("Codex returned no response")
 }
 
 fn apply_ai_edit(editor: &mut Editor, request: AiEditRequest, replacement: String) {
@@ -6605,6 +6648,235 @@ fn apply_ai_edit(editor: &mut Editor, request: AiEditRequest, replacement: Strin
     doc.apply(&transaction, request.view_id);
     doc.append_changes_to_history(view);
     editor.set_status("AI edit applied");
+}
+
+const AI_SUGGESTION_ID: &str = "ai-suggestion";
+
+fn ai_suggest(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let range = doc.selection(view.id).primary();
+    if range.len() > 1 {
+        cx.editor
+            .set_error("AI suggestion requires a cursor, not a selection");
+        return;
+    }
+
+    let cursor = range.cursor(text);
+    let before_start = cursor.saturating_sub(AI_SUGGEST_CONTEXT_CHARS);
+    let after_end = (cursor + AI_SUGGEST_CONTEXT_CHARS).min(text.len_chars());
+    let before = text.slice(before_start..cursor).to_string();
+    let after = text.slice(cursor..after_end).to_string();
+    let generation = doc.begin_ai_suggestion(view.id);
+    let request = AiSuggestRequest {
+        doc_id: doc.id(),
+        view_id: view.id,
+        version: doc.version(),
+        generation,
+        cursor,
+        workspace: doc.workspace_root().to_path_buf(),
+        file_name: doc
+            .path()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "[scratch buffer]".into()),
+        language: doc.language_name().unwrap_or("text").into(),
+        before,
+        after,
+    };
+
+    cx.callback.push(Box::new(|compositor, _| {
+        compositor.remove(AI_SUGGESTION_ID);
+    }));
+    cx.editor.set_status("AI suggest: asking Codex...");
+    cx.jobs.callback(async move {
+        let suggestion = run_codex_ai_suggest(&request).await?;
+        Ok(Callback::EditorCompositor(Box::new(
+            move |editor, compositor| {
+                show_ai_suggestion(editor, compositor, request, suggestion);
+            },
+        )))
+    });
+}
+
+async fn run_codex_ai_suggest(request: &AiSuggestRequest) -> anyhow::Result<String> {
+    const RESPONSE_SCHEMA: &str = r#"{
+  "type": "object",
+  "properties": { "suggestion": { "type": "string" } },
+  "required": ["suggestion"],
+  "additionalProperties": false
+}"#;
+
+    let prompt = format!(
+        "You are a low-latency in-editor completion engine. Return only JSON that conforms to the supplied schema. \
+         The `suggestion` value is insert-only text beginning exactly at <cursor>; it may span multiple lines. \
+         The editor concatenates the result literally as `before + suggestion + after`. Inspect both sides of this \
+         join. Include leading whitespace or punctuation in `suggestion` whenever the next token requires a separator; \
+         for example, after Python `def` at end of line, a function declaration suggestion starts with a space. Do not \
+         add a separator when the cursor is inside an identifier or another token. Do not repeat surrounding text, use \
+         markdown, or explain the suggestion. Prefer the shortest useful immediate continuation. Return an empty \
+         suggestion if no useful continuation is appropriate.\n\n\
+         File: {file_name}\nLanguage: {language}\n\n\
+         <before>\n{before}\n</before>\n\n\
+         <cursor/>\n\n\
+         <after>\n{after}\n</after>",
+        file_name = request.file_name,
+        language = request.language,
+        before = request.before,
+        after = request.after,
+    );
+
+    let response =
+        run_codex_request(&request.workspace, RESPONSE_SCHEMA, prompt, Some("low")).await?;
+    let response: AiSuggestResponse =
+        serde_json::from_str(&response).context("Codex returned an invalid suggestion response")?;
+    Ok(response.suggestion)
+}
+
+fn show_ai_suggestion(
+    editor: &mut Editor,
+    compositor: &mut Compositor,
+    request: AiSuggestRequest,
+    suggestion: String,
+) {
+    if suggestion.is_empty() {
+        return;
+    }
+    if !editor.tree.contains(request.view_id)
+        || editor.tree.get(request.view_id).doc != request.doc_id
+    {
+        return;
+    }
+
+    let doc = doc_mut!(editor, &request.doc_id);
+    let cursor_matches = doc
+        .selection(request.view_id)
+        .primary()
+        .cursor(doc.text().slice(..))
+        == request.cursor;
+    if doc.version() != request.version
+        || doc.ai_suggestion_generation(request.view_id) != Some(request.generation)
+        || !cursor_matches
+    {
+        return;
+    }
+
+    doc.set_ai_suggestion(
+        request.view_id,
+        InlineAnnotation::new(request.cursor, suggestion.clone()),
+    );
+    compositor.replace_or_push(
+        AI_SUGGESTION_ID,
+        AiSuggestion {
+            doc_id: request.doc_id,
+            view_id: request.view_id,
+            version: request.version,
+            generation: request.generation,
+            cursor: request.cursor,
+            suggestion,
+        },
+    );
+    editor.set_status("AI suggest: Tab/Enter accepts, Esc dismisses");
+}
+
+struct AiSuggestion {
+    doc_id: DocumentId,
+    view_id: ViewId,
+    version: i32,
+    generation: u64,
+    cursor: usize,
+    suggestion: String,
+}
+
+impl AiSuggestion {
+    fn valid(&self, editor: &Editor) -> bool {
+        if !editor.tree.contains(self.view_id) || editor.tree.get(self.view_id).doc != self.doc_id {
+            return false;
+        }
+        let doc = &editor.documents[&self.doc_id];
+        doc.version() == self.version
+            && doc.ai_suggestion_generation(self.view_id) == Some(self.generation)
+            && doc
+                .selection(self.view_id)
+                .primary()
+                .cursor(doc.text().slice(..))
+                == self.cursor
+    }
+
+    fn dismiss(&self, editor: &mut Editor) {
+        if let Some(doc) = editor.document_mut(self.doc_id) {
+            doc.cancel_ai_suggestion(self.view_id);
+        }
+    }
+
+    fn accept(&self, editor: &mut Editor) {
+        if !self.valid(editor) {
+            self.dismiss(editor);
+            return;
+        }
+
+        let view = view_mut!(editor, self.view_id);
+        let doc = doc_mut!(editor, &self.doc_id);
+        doc.cancel_ai_suggestion(self.view_id);
+        doc.append_changes_to_history(view);
+        let transaction = Transaction::change(
+            doc.text(),
+            [(
+                self.cursor,
+                self.cursor,
+                Some(self.suggestion.clone().into()),
+            )]
+            .into_iter(),
+        );
+        doc.apply(&transaction, self.view_id);
+        doc.append_changes_to_history(view);
+        editor.set_status("AI suggestion accepted");
+    }
+}
+
+impl Component for AiSuggestion {
+    fn handle_event(
+        &mut self,
+        event: &compositor::Event,
+        cx: &mut compositor::Context,
+    ) -> compositor::EventResult {
+        let close = || {
+            Box::new(
+                |compositor: &mut Compositor, _: &mut crate::compositor::Context| {
+                    compositor.remove(AI_SUGGESTION_ID);
+                },
+            ) as compositor::Callback
+        };
+
+        match event {
+            compositor::Event::Key(key) if *key == key!(Tab) || *key == key!(Enter) => {
+                self.accept(cx.editor);
+                compositor::EventResult::Consumed(Some(close()))
+            }
+            compositor::Event::Key(key) if *key == key!(Esc) || *key == ctrl!('c') => {
+                self.dismiss(cx.editor);
+                compositor::EventResult::Consumed(Some(close()))
+            }
+            compositor::Event::Key(_)
+            | compositor::Event::Paste(_)
+            | compositor::Event::Mouse(_) => {
+                self.dismiss(cx.editor);
+                compositor::EventResult::Ignored(Some(close()))
+            }
+            _ => compositor::EventResult::Ignored(None),
+        }
+    }
+
+    fn render(
+        &mut self,
+        _area: helix_view::graphics::Rect,
+        _frame: &mut tui::buffer::Buffer,
+        _cx: &mut compositor::Context,
+    ) {
+    }
+
+    fn id(&self) -> Option<&'static str> {
+        Some(AI_SUGGESTION_ID)
+    }
 }
 
 fn steal_char_impl(cx: &mut Context, above: bool) {
