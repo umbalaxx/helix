@@ -45,7 +45,10 @@
 | `auto-completion` | Enable automatic pop up of auto-completion | `true` |
 | `auto-ai-suggest` | Automatically request AI ghost-text suggestions while editing in insert mode. Manual `:ai_suggest` remains available when disabled. | `true` |
 | `ai-suggest-delay-ms` | Time in milliseconds to wait after an edit before requesting an automatic AI suggestion. | `175` |
-| `ai-suggest-context-length` | Number of characters of document context sent before and after the cursor for AI suggestions. | `1200` |
+| `ai-suggest-context-length` | Number of nearby document-context characters sent before and after the cursor for AI suggestions. Structural context is added separately. | `600` |
+| `ai-edit-context-length` | Number of nearby document-context characters sent before and after the target for AI edits. Structural context is added separately. | `2000` |
+| `ai-edit-reasoning-effort` | Codex reasoning effort for AI edits: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. The selected model must support the chosen value. | `"medium"` |
+| `ai-suggest-reasoning-effort` | Codex reasoning effort for latency-sensitive AI suggestions. | `"none"` |
 | `path-completion` | Enable filepath completion. Show files and directories if an existing path at the cursor was recognized, either absolute or relative to the current opened document or current working directory (if the buffer is not yet saved). Defaults to true. | `true` |
 | `auto-format` | Enable automatic formatting on save[^3] | `true` |
 | `idle-timeout` | Time in milliseconds since last keypress before idle timers trigger. | `250` |
