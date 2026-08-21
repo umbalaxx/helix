@@ -306,6 +306,34 @@ where
     Ok(chars)
 }
 
+/// Reasoning effort passed to the Codex backend for editor AI requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiReasoningEffort {
+    None,
+    /// Retained for compatibility with older GPT-5 model configurations.
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl AiReasoningEffort {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct Config {
@@ -342,8 +370,15 @@ pub struct Config {
     /// Defaults to 175ms.
     pub ai_suggest_delay_ms: u64,
     /// Number of characters of document context on each side of the cursor sent to AI suggestions.
-    /// Defaults to 1200.
+    /// Defaults to 600.
     pub ai_suggest_context_length: usize,
+    /// Number of characters of nearby document context on each side of an AI edit target.
+    /// Defaults to 2000.
+    pub ai_edit_context_length: usize,
+    /// Reasoning effort for AI edits. Defaults to medium.
+    pub ai_edit_reasoning_effort: AiReasoningEffort,
+    /// Reasoning effort for latency-sensitive AI suggestions. Defaults to none.
+    pub ai_suggest_reasoning_effort: AiReasoningEffort,
     /// Enable filepath completion.
     /// Show files and directories if an existing path at the cursor was recognized,
     /// either absolute or relative to the current opened document or current working directory (if the buffer is not yet saved).
@@ -1331,7 +1366,10 @@ impl Default for Config {
             auto_completion: true,
             auto_ai_suggest: true,
             ai_suggest_delay_ms: 175,
-            ai_suggest_context_length: 1_200,
+            ai_suggest_context_length: 600,
+            ai_edit_context_length: 2_000,
+            ai_edit_reasoning_effort: AiReasoningEffort::Medium,
+            ai_suggest_reasoning_effort: AiReasoningEffort::None,
             path_completion: true,
             word_completion: WordCompletion::default(),
             auto_format: true,

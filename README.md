@@ -83,6 +83,14 @@ Be careful though, as hard resetting might lose you features you like, that I en
     - Press `Esc` to cancel the ghost text without leaving the normal mode
     - When ghost text appears, it takes precedence over popup suggestion box, so popup will disappear.
       Popup will reappear again when the ghost text is cancelled by `Esc`
+- Improve both `ai_edit` and `ai_suggest` commands, now they include scope. And we have more editor configs:
+    - auto-ai-suggest = true
+    - ai-suggest-delay-ms = 175
+    - ai-suggest-context-length = 600
+    - ai-suggest-reasoning-effort = "none"
+    - ai-edit-context-length = 2000
+    - ai-edit-reasoning-effort = "medium"
+
 
 # This fork's changes
 

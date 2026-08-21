@@ -6433,7 +6433,65 @@ pub fn completion(cx: &mut Context) {
         .trigger_completions(cursor, doc.id(), view.id);
 }
 
-const AI_EDIT_CONTEXT_CHARS: usize = 6_000;
+const AI_EDIT_SCOPE_CONTEXT_CHARS: usize = 1_600;
+const AI_EDIT_FILE_PREFIX_CHARS: usize = 800;
+const AI_SUGGEST_SCOPE_CONTEXT_CHARS: usize = 280;
+const AI_SUGGEST_FILE_PREFIX_CHARS: usize = 240;
+
+#[derive(Clone)]
+struct AiContext {
+    before: String,
+    after: String,
+    file_prefix: String,
+    scope_kind: Option<String>,
+    scope: Option<String>,
+}
+
+fn build_ai_context(
+    doc: &Document,
+    text: RopeSlice,
+    focus_start: usize,
+    focus_end: usize,
+    nearby_context_length: usize,
+    scope_context_length: usize,
+    file_prefix_length: usize,
+) -> AiContext {
+    let text_len = text.len_chars();
+    let focus_start = focus_start.min(text_len);
+    let focus_end = focus_end.min(text_len).max(focus_start);
+    let before_start = focus_start.saturating_sub(nearby_context_length);
+    let after_end = (focus_end + nearby_context_length).min(text_len);
+
+    // The syntax tree is already maintained by Helix. Walking its ancestors is
+    // local and cheap, unlike an LSP request or a workspace scan. Retain the
+    // largest enclosing named node that fits the small structural budget.
+    let scope = doc.syntax().and_then(|syntax| {
+        let start_byte = text.char_to_byte(focus_start) as u32;
+        let end_byte = text.char_to_byte(focus_end) as u32;
+        let mut node = syntax.named_descendant_for_byte_range(start_byte, end_byte)?;
+        let mut best = None;
+        loop {
+            let start = text.byte_to_char(node.start_byte() as usize);
+            let end = text.byte_to_char(node.end_byte() as usize);
+            if end >= start && end - start <= scope_context_length {
+                best = Some((node.kind().to_owned(), text.slice(start..end).to_string()));
+            }
+            let Some(parent) = node.parent() else {
+                break;
+            };
+            node = parent;
+        }
+        best
+    });
+
+    AiContext {
+        before: text.slice(before_start..focus_start).to_string(),
+        after: text.slice(focus_end..after_end).to_string(),
+        file_prefix: text.slice(..file_prefix_length.min(text_len)).to_string(),
+        scope_kind: scope.as_ref().map(|(kind, _)| kind.clone()),
+        scope: scope.map(|(_, text)| text),
+    }
+}
 
 #[derive(Clone)]
 struct AiEditRequest {
@@ -6445,9 +6503,9 @@ struct AiEditRequest {
     workspace: PathBuf,
     file_name: String,
     language: String,
-    before: String,
+    context: AiContext,
     target: String,
-    after: String,
+    reasoning_effort: &'static str,
 }
 
 #[derive(Deserialize)]
@@ -6465,8 +6523,8 @@ struct AiSuggestRequest {
     workspace: PathBuf,
     file_name: String,
     language: String,
-    before: String,
-    after: String,
+    context: AiContext,
+    reasoning_effort: &'static str,
 }
 
 #[derive(Deserialize)]
@@ -6475,6 +6533,8 @@ struct AiSuggestResponse {
 }
 
 fn ai_edit(cx: &mut Context) {
+    let context_length = cx.editor.config().ai_edit_context_length;
+    let reasoning_effort = cx.editor.config().ai_edit_reasoning_effort.as_str();
     let (view, doc) = current_ref!(cx.editor);
     let text = doc.text().slice(..);
     let range = doc.selection(view.id).primary();
@@ -6489,8 +6549,6 @@ fn ai_edit(cx: &mut Context) {
     } else {
         (range.from(), range.to())
     };
-    let before_start = start.saturating_sub(AI_EDIT_CONTEXT_CHARS);
-    let after_end = (end + AI_EDIT_CONTEXT_CHARS).min(text.len_chars());
     let request = AiEditRequest {
         doc_id: doc.id(),
         view_id: view.id,
@@ -6503,9 +6561,17 @@ fn ai_edit(cx: &mut Context) {
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|| "[scratch buffer]".into()),
         language: doc.language_name().unwrap_or("text").into(),
-        before: text.slice(before_start..start).to_string(),
+        context: build_ai_context(
+            doc,
+            text,
+            start,
+            end,
+            context_length,
+            AI_EDIT_SCOPE_CONTEXT_CHARS,
+            AI_EDIT_FILE_PREFIX_CHARS,
+        ),
         target: text.slice(start..end).to_string(),
-        after: text.slice(end..after_end).to_string(),
+        reasoning_effort,
     };
 
     let prompt = Prompt::new(
@@ -6544,25 +6610,38 @@ async fn run_codex_ai_edit(request: &AiEditRequest, instruction: &str) -> anyhow
 }"#;
 
     let prompt = format!(
-        "You are a precise in-editor editing engine. Return only JSON that conforms to the supplied schema. \
+        "You are a precise in-editor editing engine for code, comments, Markdown, academic prose, mathematics, \
+         and technical writing. Use only the supplied context: do not use tools, inspect the workspace, or edit, \
+         create, or delete files. Return only JSON that conforms to the supplied schema. \
          The `replacement` value must be the exact text that replaces <target>. Do not include markdown, \
          explanations, code fences, or text outside that replacement. An empty replacement deletes a selected target. \
          You may use the surrounding context to solve the user's request, but never make edits outside <target>.\n\n\
          File: {file_name}\nLanguage: {language}\n\n\
+         <file-prefix>\n{file_prefix}\n</file-prefix>\n\n\
+         <enclosing-scope kind=\"{scope_kind}\">\n{scope}\n</enclosing-scope>\n\n\
          <user-request>\n{instruction}\n</user-request>\n\n\
          <before>\n{before}\n</before>\n\n\
          <target>\n{target}\n</target>\n\n\
          <after>\n{after}\n</after>",
         file_name = request.file_name,
         language = request.language,
-        before = request.before,
+        file_prefix = request.context.file_prefix,
+        scope_kind = request.context.scope_kind.as_deref().unwrap_or("none"),
+        scope = request.context.scope.as_deref().unwrap_or(""),
+        before = request.context.before,
         target = request.target,
-        after = request.after,
+        after = request.context.after,
     );
 
-    let response = run_codex_request(&request.workspace, RESPONSE_SCHEMA, prompt, None, None)
-        .await?
-        .ok_or_else(|| anyhow!("Codex edit request was canceled"))?;
+    let response = run_codex_request(
+        &request.workspace,
+        RESPONSE_SCHEMA,
+        prompt,
+        Some(request.reasoning_effort),
+        None,
+    )
+    .await?
+    .ok_or_else(|| anyhow!("Codex edit request was canceled"))?;
     let response: AiEditResponse =
         serde_json::from_str(&response).context("Codex returned an invalid edit response")?;
     Ok(response.replacement)
@@ -6676,6 +6755,7 @@ pub(crate) fn schedule_ai_suggestion(cx: &mut Context) {
 
 fn request_ai_suggestion(cx: &mut Context, delay: Duration, show_status: bool) {
     let context_length = cx.editor.config().ai_suggest_context_length;
+    let reasoning_effort = cx.editor.config().ai_suggest_reasoning_effort.as_str();
     let (view, doc) = current!(cx.editor);
     let text = doc.text().slice(..);
     let range = doc.selection(view.id).primary();
@@ -6688,10 +6768,15 @@ fn request_ai_suggestion(cx: &mut Context, delay: Duration, show_status: bool) {
     }
 
     let cursor = range.cursor(text);
-    let before_start = cursor.saturating_sub(context_length);
-    let after_end = (cursor + context_length).min(text.len_chars());
-    let before = text.slice(before_start..cursor).to_string();
-    let after = text.slice(cursor..after_end).to_string();
+    let context = build_ai_context(
+        doc,
+        text,
+        cursor,
+        cursor,
+        context_length,
+        AI_SUGGEST_SCOPE_CONTEXT_CHARS,
+        AI_SUGGEST_FILE_PREFIX_CHARS,
+    );
     let (generation, cancellation) = doc.restart_ai_suggestion(view.id);
     let request = AiSuggestRequest {
         doc_id: doc.id(),
@@ -6705,8 +6790,8 @@ fn request_ai_suggestion(cx: &mut Context, delay: Duration, show_status: bool) {
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|| "[scratch buffer]".into()),
         language: doc.language_name().unwrap_or("text").into(),
-        before,
-        after,
+        context,
+        reasoning_effort,
     };
 
     if show_status {
@@ -6743,29 +6828,37 @@ async fn run_codex_ai_suggest(
 }"#;
 
     let prompt = format!(
-        "You are a low-latency in-editor completion engine. Return only JSON that conforms to the supplied schema. \
+        "You are a low-latency in-editor completion engine for code and natural-language writing, including comments, \
+         Markdown, academic prose, mathematics, and technical documents. Use only the supplied context: do not use \
+         tools, inspect the workspace, or edit, create, or delete files. Return only JSON that conforms to the supplied \
+         schema. Predict only the user's immediate next intent. \
          The `suggestion` value is insert-only text beginning exactly at <cursor>; it may span multiple lines. \
          The editor concatenates the result literally as `before + suggestion + after`. Inspect both sides of this \
          join. Include leading whitespace or punctuation in `suggestion` whenever the next token requires a separator; \
          for example, after Python `def` at end of line, a function declaration suggestion starts with a space. Do not \
          add a separator when the cursor is inside an identifier or another token. Do not repeat surrounding text, use \
-         markdown, or explain the suggestion. Prefer the shortest useful immediate continuation. Return an empty \
+         markdown, or explain the suggestion. Prefer the shortest high-confidence continuation. Return an empty \
          suggestion if no useful continuation is appropriate.\n\n\
          File: {file_name}\nLanguage: {language}\n\n\
+         <file-prefix>\n{file_prefix}\n</file-prefix>\n\n\
+         <enclosing-scope kind=\"{scope_kind}\">\n{scope}\n</enclosing-scope>\n\n\
          <before>\n{before}\n</before>\n\n\
          <cursor/>\n\n\
          <after>\n{after}\n</after>",
         file_name = request.file_name,
         language = request.language,
-        before = request.before,
-        after = request.after,
+        file_prefix = request.context.file_prefix,
+        scope_kind = request.context.scope_kind.as_deref().unwrap_or("none"),
+        scope = request.context.scope.as_deref().unwrap_or(""),
+        before = request.context.before,
+        after = request.context.after,
     );
 
     let Some(response) = run_codex_request(
         &request.workspace,
         RESPONSE_SCHEMA,
         prompt,
-        Some("low"),
+        Some(request.reasoning_effort),
         Some(cancellation),
     )
     .await?
