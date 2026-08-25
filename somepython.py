@@ -34,3 +34,12 @@ class Calculator:
 
     def power(self, num1, num2):
         return num1**num2
+
+    def square_root(self, num1):
+        return num1**0.5
+
+    def factorial(self, num1):
+        if num1 == 0:
+            return 1
+        else:
+            return num1 * self.factorial(num1 - 1)

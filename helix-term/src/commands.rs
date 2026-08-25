@@ -559,7 +559,7 @@ impl MappableCommand {
         remove_primary_selection, "Remove primary selection",
         completion, "Invoke completion popup",
         ai_edit, "Ask Codex to insert or replace text at the primary selection",
-        ai_suggest, "Ask Codex for an insert-only ghost text suggestion",
+        ai_suggest, "Ask Codestral for an insert-only ghost text suggestion",
         steal_char_above, "Type the character above you",
         steal_char_below, "Type the character below you",
         hover, "Show docs for item under cursor",
@@ -6437,6 +6437,7 @@ const AI_EDIT_SCOPE_CONTEXT_CHARS: usize = 1_600;
 const AI_EDIT_FILE_PREFIX_CHARS: usize = 800;
 const AI_SUGGEST_SCOPE_CONTEXT_CHARS: usize = 280;
 const AI_SUGGEST_FILE_PREFIX_CHARS: usize = 240;
+static MISTRAL_CLIENT: Lazy<reqwest::Client> = Lazy::new(reqwest::Client::new);
 
 #[derive(Clone)]
 struct AiContext {
@@ -6520,16 +6521,22 @@ struct AiSuggestRequest {
     version: i32,
     generation: u64,
     cursor: usize,
-    workspace: PathBuf,
-    file_name: String,
-    language: String,
     context: AiContext,
-    reasoning_effort: &'static str,
 }
 
 #[derive(Deserialize)]
-struct AiSuggestResponse {
-    suggestion: String,
+struct MistralFimResponse {
+    choices: Vec<MistralFimChoice>,
+}
+
+#[derive(Deserialize)]
+struct MistralFimChoice {
+    message: MistralFimMessage,
+}
+
+#[derive(Deserialize)]
+struct MistralFimMessage {
+    content: String,
 }
 
 fn ai_edit(cx: &mut Context) {
@@ -6673,6 +6680,14 @@ async fn run_codex_request(
         .arg("read-only")
         .arg("--cd")
         .arg(workspace)
+        // Helix also treats .svn, .jj, and .helix directories as workspaces, but Codex's
+        // default exec preflight only accepts Git repositories.
+        .arg("--skip-git-repo-check")
+        // These requests only use the prompt context assembled by Helix, but Codex still
+        // refuses to run in a project that has not been trusted. Trust this project for this
+        // invocation without weakening the read-only sandbox above.
+        .arg("-c")
+        .arg(format!("projects.{workspace:?}.trust_level=\"trusted\""))
         .arg("--output-schema")
         .arg(&schema)
         .arg("--output-last-message")
@@ -6755,7 +6770,6 @@ pub(crate) fn schedule_ai_suggestion(cx: &mut Context) {
 
 fn request_ai_suggestion(cx: &mut Context, delay: Duration, show_status: bool) {
     let context_length = cx.editor.config().ai_suggest_context_length;
-    let reasoning_effort = cx.editor.config().ai_suggest_reasoning_effort.as_str();
     let (view, doc) = current!(cx.editor);
     let text = doc.text().slice(..);
     let range = doc.selection(view.id).primary();
@@ -6784,18 +6798,11 @@ fn request_ai_suggestion(cx: &mut Context, delay: Duration, show_status: bool) {
         version: doc.version(),
         generation,
         cursor,
-        workspace: doc.workspace_root().to_path_buf(),
-        file_name: doc
-            .path()
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "[scratch buffer]".into()),
-        language: doc.language_name().unwrap_or("text").into(),
         context,
-        reasoning_effort,
     };
 
     if show_status {
-        cx.editor.set_status("AI suggest: asking Codex...");
+        cx.editor.set_status("AI suggest: asking Codestral...");
     }
     cx.jobs.callback(async move {
         if !delay.is_zero()
@@ -6805,7 +6812,7 @@ fn request_ai_suggestion(cx: &mut Context, delay: Duration, show_status: bool) {
         {
             return Ok(Callback::Editor(Box::new(|_| {})));
         }
-        let Some(suggestion) = run_codex_ai_suggest(&request, &cancellation).await? else {
+        let Some(suggestion) = run_mistral_ai_suggest(&request, &cancellation).await? else {
             return Ok(Callback::Editor(Box::new(|_| {})));
         };
         Ok(Callback::EditorCompositor(Box::new(
@@ -6816,58 +6823,45 @@ fn request_ai_suggestion(cx: &mut Context, delay: Duration, show_status: bool) {
     });
 }
 
-async fn run_codex_ai_suggest(
+async fn run_mistral_ai_suggest(
     request: &AiSuggestRequest,
     cancellation: &TaskHandle,
 ) -> anyhow::Result<Option<String>> {
-    const RESPONSE_SCHEMA: &str = r#"{
-  "type": "object",
-  "properties": { "suggestion": { "type": "string" } },
-  "required": ["suggestion"],
-  "additionalProperties": false
-}"#;
+    let api_key = std::env::var("MISTRAL_API_KEY")
+        .context("MISTRAL_API_KEY is not set; configure it to enable AI suggestions")?;
+    let model = std::env::var("MISTRAL_FIM_MODEL").unwrap_or_else(|_| "codestral-latest".into());
 
-    let prompt = format!(
-        "You are a low-latency in-editor completion engine for code and natural-language writing, including comments, \
-         Markdown, academic prose, mathematics, and technical documents. Use only the supplied context: do not use \
-         tools, inspect the workspace, or edit, create, or delete files. Return only JSON that conforms to the supplied \
-         schema. Predict only the user's immediate next intent. \
-         The `suggestion` value is insert-only text beginning exactly at <cursor>; it may span multiple lines. \
-         The editor concatenates the result literally as `before + suggestion + after`. Inspect both sides of this \
-         join. Include leading whitespace or punctuation in `suggestion` whenever the next token requires a separator; \
-         for example, after Python `def` at end of line, a function declaration suggestion starts with a space. Do not \
-         add a separator when the cursor is inside an identifier or another token. Do not repeat surrounding text, use \
-         markdown, or explain the suggestion. Prefer the shortest high-confidence continuation. Return an empty \
-         suggestion if no useful continuation is appropriate.\n\n\
-         File: {file_name}\nLanguage: {language}\n\n\
-         <file-prefix>\n{file_prefix}\n</file-prefix>\n\n\
-         <enclosing-scope kind=\"{scope_kind}\">\n{scope}\n</enclosing-scope>\n\n\
-         <before>\n{before}\n</before>\n\n\
-         <cursor/>\n\n\
-         <after>\n{after}\n</after>",
-        file_name = request.file_name,
-        language = request.language,
-        file_prefix = request.context.file_prefix,
-        scope_kind = request.context.scope_kind.as_deref().unwrap_or("none"),
-        scope = request.context.scope.as_deref().unwrap_or(""),
-        before = request.context.before,
-        after = request.context.after,
-    );
-
-    let Some(response) = run_codex_request(
-        &request.workspace,
-        RESPONSE_SCHEMA,
-        prompt,
-        Some(request.reasoning_effort),
-        Some(cancellation),
-    )
-    .await?
-    else {
+    let request_future = MISTRAL_CLIENT
+        .post("https://api.mistral.ai/v1/fim/completions")
+        .bearer_auth(api_key)
+        .json(&serde_json::json!({
+            "model": model,
+            "prompt": request.context.before.clone(),
+            "suffix": request.context.after.clone(),
+            "max_tokens": 128,
+            "temperature": 0.2,
+            "stream": false,
+        }))
+        .send();
+    let Some(response) = cancelable_future(request_future, cancellation).await else {
         return Ok(None);
     };
-    let response: AiSuggestResponse =
-        serde_json::from_str(&response).context("Codex returned an invalid suggestion response")?;
-    Ok(Some(response.suggestion))
+    let response = response.context("failed to send Mistral FIM request")?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .context("failed to read Mistral FIM response")?;
+    if !status.is_success() {
+        bail!("Mistral FIM request failed ({status}): {}", body.trim());
+    }
+    let response: MistralFimResponse =
+        serde_json::from_str(&body).context("Mistral returned an invalid FIM response")?;
+    Ok(response
+        .choices
+        .into_iter()
+        .next()
+        .map(|choice| choice.message.content))
 }
 
 fn show_ai_suggestion(
