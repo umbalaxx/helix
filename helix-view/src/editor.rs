@@ -372,6 +372,9 @@ pub struct Config {
     /// Number of characters of document context on each side of the cursor sent to AI suggestions.
     /// Defaults to 600.
     pub ai_suggest_context_length: usize,
+    /// Path to a file containing the Mistral API key for AI suggestions. The file is trimmed and
+    /// read when a request is made. Defaults to `None`, falling back to `MISTRAL_API_KEY`.
+    pub ai_suggest_api_key_file: Option<PathBuf>,
     /// Number of characters of nearby document context on each side of an AI edit target.
     /// Defaults to 2000.
     pub ai_edit_context_length: usize,
@@ -1367,6 +1370,7 @@ impl Default for Config {
             auto_ai_suggest: true,
             ai_suggest_delay_ms: 175,
             ai_suggest_context_length: 600,
+            ai_suggest_api_key_file: None,
             ai_edit_context_length: 2_000,
             ai_edit_reasoning_effort: AiReasoningEffort::Medium,
             ai_suggest_reasoning_effort: AiReasoningEffort::None,

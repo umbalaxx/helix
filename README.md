@@ -87,12 +87,20 @@ Be careful though, as hard resetting might lose you features you like, that I en
     - auto-ai-suggest = true
     - ai-suggest-delay-ms = 175
     - ai-suggest-context-length = 600
-    - ai-suggest-reasoning-effort = "none"
     - ai-edit-context-length = 2000
-    - ai-edit-reasoning-effort = "medium"
+    - ai-suggest-api-key-file = "~/Documents/secrets/mistral-codestral-api-key"
+- Improve the `ai-suggest` command for speed and accuracy using Mistral's Codestral FIM API
+    - The API-KEY can be set using environment variable `MISTRAL_API_KEY` or using the `ai-suggest-api-key-file` config
 
 `ai-suggest` uses Mistral's hosted Codestral FIM API. Set `MISTRAL_API_KEY` in the environment before
-starting Helix; `MISTRAL_FIM_MODEL` optionally overrides the default `codestral-latest` model.
+starting Helix, or configure a raw key file in the global `[editor]` section:
+
+```toml
+ai-suggest-api-key-file = "~/.config/mistral/api-key"
+```
+
+`MISTRAL_FIM_MODEL` optionally overrides the default `codestral-latest` model. Keep the key file
+outside project repositories and restrict its permissions.
 
 
 # This fork's changes
@@ -980,4 +988,3 @@ Discuss the project on the community [Matrix Space](https://matrix.to/#/#helix-c
 # Credits
 
 Thanks to [@jakenvac](https://github.com/jakenvac) for designing the logo!
-

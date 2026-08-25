@@ -6522,6 +6522,7 @@ struct AiSuggestRequest {
     generation: u64,
     cursor: usize,
     context: AiContext,
+    api_key_file: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -6770,6 +6771,7 @@ pub(crate) fn schedule_ai_suggestion(cx: &mut Context) {
 
 fn request_ai_suggestion(cx: &mut Context, delay: Duration, show_status: bool) {
     let context_length = cx.editor.config().ai_suggest_context_length;
+    let api_key_file = cx.editor.config().ai_suggest_api_key_file.clone();
     let (view, doc) = current!(cx.editor);
     let text = doc.text().slice(..);
     let range = doc.selection(view.id).primary();
@@ -6799,6 +6801,7 @@ fn request_ai_suggestion(cx: &mut Context, delay: Duration, show_status: bool) {
         generation,
         cursor,
         context,
+        api_key_file,
     };
 
     if show_status {
@@ -6827,8 +6830,24 @@ async fn run_mistral_ai_suggest(
     request: &AiSuggestRequest,
     cancellation: &TaskHandle,
 ) -> anyhow::Result<Option<String>> {
-    let api_key = std::env::var("MISTRAL_API_KEY")
-        .context("MISTRAL_API_KEY is not set; configure it to enable AI suggestions")?;
+    let api_key = if let Some(path) = request.api_key_file.as_deref() {
+        let path = path::expand(path);
+        let key = std::fs::read_to_string(path.as_ref()).with_context(|| {
+            format!(
+                "failed to read Mistral API key file {}; check editor.ai-suggest-api-key-file",
+                path.display()
+            )
+        })?;
+        let key = key.trim().to_owned();
+        ensure!(
+            !key.is_empty(),
+            "Mistral API key file is empty; check editor.ai-suggest-api-key-file"
+        );
+        key
+    } else {
+        std::env::var("MISTRAL_API_KEY")
+            .context("MISTRAL_API_KEY is not set and no API key file is configured")?
+    };
     let model = std::env::var("MISTRAL_FIM_MODEL").unwrap_or_else(|_| "codestral-latest".into());
 
     let request_future = MISTRAL_CLIENT

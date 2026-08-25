@@ -50,3 +50,6 @@ class Calculator:
 
     def is_even(self, num1):
         return num1 % 2 == 0
+
+    def is_odd(self, num1):
+        return num1 % 2 != 0
