@@ -9,9 +9,6 @@ class Calculator:
         self.sum += sum_
         return sum_
 
-    def calculate_sum(self, num1, num2):
-        return num1 + num2
-
     def subtract(self, num1, num2):
         return num1 - num2
 
@@ -29,9 +26,6 @@ class Calculator:
     def reset(self):
         self.sum = 0
 
-    def get_sum(self):
-        return self.sum
-
     def power(self, num1, num2):
         return num1**num2
 
@@ -43,3 +37,16 @@ class Calculator:
             return 1
         else:
             return num1 * self.factorial(num1 - 1)
+
+    # Some other functions
+
+    def is_prime(self, num1):
+        if num1 <= 1:
+            return False
+        for i in range(2, int(num1**0.5) + 1):
+            if num1 % i == 0:
+                return False
+        return True
+
+    def is_even(self, num1):
+        return num1 % 2 == 0
