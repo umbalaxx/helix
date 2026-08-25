@@ -91,6 +91,9 @@ Be careful though, as hard resetting might lose you features you like, that I en
     - ai-edit-context-length = 2000
     - ai-edit-reasoning-effort = "medium"
 
+`ai-suggest` uses Mistral's hosted Codestral FIM API. Set `MISTRAL_API_KEY` in the environment before
+starting Helix; `MISTRAL_FIM_MODEL` optionally overrides the default `codestral-latest` model.
+
 
 # This fork's changes
 
@@ -977,5 +980,4 @@ Discuss the project on the community [Matrix Space](https://matrix.to/#/#helix-c
 # Credits
 
 Thanks to [@jakenvac](https://github.com/jakenvac) for designing the logo!
-
 

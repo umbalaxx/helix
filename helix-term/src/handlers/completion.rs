@@ -280,7 +280,8 @@ pub(super) fn register_hooks(_handlers: &Handlers) {
                 .event(CompletionEvent::Cancel);
             clear_completions(event.cx);
         } else if event.new_mode == Mode::Insert {
-            trigger_auto_completion(event.cx.editor, false)
+            trigger_auto_completion(event.cx.editor, false);
+            crate::commands::schedule_ai_suggestion(event.cx);
         }
         Ok(())
     });
