@@ -91,17 +91,22 @@ Be careful though, as hard resetting might lose you features you like, that I en
     - ai-suggest-api-key-file = "~/Documents/secrets/mistral-codestral-api-key"
 - Improve the `ai-suggest` command for speed and accuracy using Mistral's Codestral FIM API
     - The API-KEY can be set using environment variable `MISTRAL_API_KEY` or using the `ai-suggest-api-key-file` config
+- `ai-suggest` uses Mistral's hosted Codestral FIM API. Set `MISTRAL_API_KEY` in the environment before
+    starting Helix, or configure a raw key file in the global `[editor]` section:
 
-`ai-suggest` uses Mistral's hosted Codestral FIM API. Set `MISTRAL_API_KEY` in the environment before
-starting Helix, or configure a raw key file in the global `[editor]` section:
+    ```toml
+    ai-suggest-api-key-file = "~/.config/mistral/api-key"
 
-```toml
-ai-suggest-api-key-file = "~/.config/mistral/api-key"
-```
-
-`MISTRAL_FIM_MODEL` optionally overrides the default `codestral-latest` model. Keep the key file
-outside project repositories and restrict its permissions.
-
+    ```
+    `MISTRAL_FIM_MODEL` optionally overrides the default `codestral-latest` model. Keep the key file
+    outside project repositories and restrict its permissions.
+- Add `preview_change` to preview the git changes in the buffer using popup anchored to the cursor:
+    - `preview_change` is a command that can be bound to a key in the keymap.
+    - The default keymap is `space + g`
+    - The popup can be dismissed by pressing `esc` or moving the cursor away from the popup.
+    - The `space + g` for file change picker is changed to `space + G`.
+    - The experimental debug is changed from `space + G` to `space + X` to avoid conflict with the new
+    `space + g`.
 
 # This fork's changes
 

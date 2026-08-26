@@ -77,7 +77,7 @@ use crate::{
     ctrl, filter_picker_entry,
     job::Callback,
     key,
-    ui::{self, overlay::overlaid, Picker, PickerColumn, Popup, Prompt, PromptEvent},
+    ui::{self, overlay::overlaid, DiffPreview, Picker, PickerColumn, Popup, Prompt, PromptEvent},
 };
 
 use crate::job::{self, Jobs};
@@ -498,6 +498,7 @@ impl MappableCommand {
         goto_prev_change, "Goto previous change",
         goto_first_change, "Goto first change",
         goto_last_change, "Goto last change",
+        preview_change, "Preview change under cursor",
         goto_line_start, "Goto line start",
         goto_line_end, "Goto line end",
         goto_column, "Goto column",
@@ -5087,6 +5088,48 @@ fn goto_first_change_impl(cx: &mut Context, reverse: bool) {
 
 fn goto_next_change(cx: &mut Context) {
     goto_next_change_impl(cx, Direction::Forward)
+}
+
+fn preview_change(cx: &mut Context) {
+    let result = 'result: {
+        let (view, doc) = current!(cx.editor);
+        let Some(handle) = doc.diff_handle() else {
+            break 'result Err("Diff is not available in current buffer");
+        };
+
+        let text = doc.text().slice(..);
+        let line = doc.selection(view.id).primary().cursor_line(text) as u32;
+        let diff = handle.load();
+        let Some(hunk_idx) = diff.hunk_at(line, true) else {
+            break 'result Err("No change under cursor");
+        };
+        let hunk = diff.nth_hunk(hunk_idx);
+        let before = diff.diff_base();
+        let after = diff.doc();
+        let before_start = before.line_to_char(hunk.before.start as usize);
+        let before_end = before.line_to_char(hunk.before.end as usize);
+        let after_start = after.line_to_char(hunk.after.start as usize);
+        let after_end = after.line_to_char(hunk.after.end as usize);
+        let before: String = before.slice(before_start..before_end).chunks().collect();
+        let after: String = after.slice(after_start..after_end).chunks().collect();
+        let language = doc.language_name().unwrap_or("").to_owned();
+        Ok((before, after, language))
+    };
+
+    let (before, after, language) = match result {
+        Ok(result) => result,
+        Err(error) => {
+            cx.editor.set_status(error);
+            return;
+        }
+    };
+    let theme = cx.editor.theme.clone();
+    let loader = cx.editor.syn_loader.load();
+    let preview = DiffPreview::new(&before, &after, &language, &theme, &loader);
+    let popup = Popup::new("diff-preview", preview)
+        .auto_close(true)
+        .position(Some(cx.editor.cursor().0.unwrap_or_default()));
+    cx.replace_or_push_layer("diff-preview", popup);
 }
 
 fn goto_prev_change(cx: &mut Context) {

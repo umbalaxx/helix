@@ -262,11 +262,12 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "s" => lsp_or_syntax_symbol_picker,
             "S" => lsp_or_syntax_workspace_symbol_picker,
             "d" => diagnostics_picker,
+            "g" => preview_change,
             "D" => workspace_diagnostics_picker,
-            "g" => changed_file_picker,
+            "G" => changed_file_picker,
             "a" => code_action,
             "'" => last_picker,
-            "G" => { "Debug (experimental)" sticky=true
+            "X" => { "Debug (experimental)" sticky=true
                 "l" => dap_launch,
                 "r" => dap_restart,
                 "b" => dap_toggle_breakpoint,
