@@ -140,6 +140,7 @@ pub fn begin_execution(
 #[derive(Debug, Clone)]
 pub struct InlineOutput {
     pub anchor_line: usize,
+    pub anchor_char: usize,
     pub label: String,
     pub status: String,
     pub elapsed_ms: Option<u128>,
@@ -181,8 +182,10 @@ pub fn inline_outputs(source_path: &Path, source_text: &str) -> Vec<InlineOutput
                 .cell_index
                 .and_then(|index| cell_by_index(source_text, index))
                 .map_or(record.anchor_line, |cell| cell.lines.end.saturating_sub(1));
+            let anchor_char = line_end_char(source_text, anchor_line);
             Some(InlineOutput {
                 anchor_line,
+                anchor_char,
                 label: label.clone(),
                 status: status.to_owned(),
                 elapsed_ms: record.elapsed_ms,
@@ -192,6 +195,19 @@ pub fn inline_outputs(source_path: &Path, source_text: &str) -> Vec<InlineOutput
         .collect::<Vec<_>>();
     outputs.sort_by_key(|output| output.anchor_line);
     outputs
+}
+
+fn line_end_char(source_text: &str, line: usize) -> usize {
+    let mut current_line = 0;
+    for (char_idx, character) in source_text.chars().enumerate() {
+        if current_line == line && character == '\n' {
+            return char_idx + 1;
+        }
+        if character == '\n' {
+            current_line += 1;
+        }
+    }
+    source_text.chars().count()
 }
 
 fn current_code(record: &ExecutionRecord, label: &str, source_text: &str) -> Option<String> {

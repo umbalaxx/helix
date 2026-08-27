@@ -1,6 +1,8 @@
 use helix_core::text_annotations::LineAnnotation;
 use helix_core::Position;
 use helix_view::Theme;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use crate::{
     python::InlineOutput,
@@ -18,14 +20,28 @@ pub struct PythonOutput {
     outputs: Vec<InlineOutput>,
     style: helix_view::theme::Style,
     output_style: helix_view::theme::Style,
+    final_lines: Arc<Mutex<HashMap<usize, bool>>>,
 }
 
 impl PythonOutput {
-    pub fn new(outputs: Vec<InlineOutput>, theme: &Theme) -> Self {
+    pub fn pair(outputs: Vec<InlineOutput>, theme: &Theme) -> (Self, Self) {
+        let state = Arc::new(Mutex::new(HashMap::new()));
+        (
+            Self::with_state(outputs.clone(), theme, state.clone()),
+            Self::with_state(outputs, theme, state),
+        )
+    }
+
+    fn with_state(
+        outputs: Vec<InlineOutput>,
+        theme: &Theme,
+        final_lines: Arc<Mutex<HashMap<usize, bool>>>,
+    ) -> Self {
         Self {
             outputs,
             style: theme.get("ui.virtual.inlay-hint"),
             output_style: theme.get("ui.virtual.wrap"),
+            final_lines,
         }
     }
 
@@ -52,7 +68,16 @@ impl PythonOutput {
         let outputs = self
             .outputs
             .iter()
-            .filter(|output| output.anchor_line == pos.doc_line)
+            .filter(|output| {
+                output.anchor_line == pos.doc_line
+                    && self
+                        .final_lines
+                        .lock()
+                        .expect("Python output state mutex poisoned")
+                        .get(&pos.doc_line)
+                        .copied()
+                        .unwrap_or(false)
+            })
             .collect::<Vec<_>>();
         if outputs.is_empty() {
             return Position::new(0, 0);
@@ -84,14 +109,23 @@ impl PythonOutput {
 impl LineAnnotation for PythonOutput {
     fn insert_virtual_lines(
         &mut self,
-        _line_end_char_idx: usize,
+        line_end_char_idx: usize,
         _line_end_visual_pos: Position,
         doc_line: usize,
     ) -> Position {
+        let is_final = self.outputs.iter().any(|output| {
+            output.anchor_line == doc_line && output.anchor_char <= line_end_char_idx
+        });
+        self.final_lines
+            .lock()
+            .expect("Python output state mutex poisoned")
+            .insert(doc_line, is_final);
         Position::new(
             self.outputs
                 .iter()
-                .filter(|output| output.anchor_line == doc_line)
+                .filter(|output| {
+                    output.anchor_line == doc_line && output.anchor_char <= line_end_char_idx
+                })
                 .map(Self::output_lines)
                 .sum(),
             0,

@@ -109,10 +109,10 @@ impl EditorView {
                 let outputs =
                     crate::python::inline_outputs(path, &doc.text().slice(..).to_string());
                 if !outputs.is_empty() {
-                    text_annotations.add_line_annotation(Box::new(
-                        text_decorations::PythonOutput::new(outputs.clone(), theme),
-                    ));
-                    decorations.add_decoration(text_decorations::PythonOutput::new(outputs, theme));
+                    let (annotation, decoration) =
+                        text_decorations::PythonOutput::pair(outputs, theme);
+                    text_annotations.add_line_annotation(Box::new(annotation));
+                    decorations.add_decoration(decoration);
                 }
             }
         }
