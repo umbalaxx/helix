@@ -47,6 +47,8 @@ static SESSION_RUNNING: Lazy<Mutex<HashMap<PathBuf, bool>>> =
 static SESSION_INTERRUPTING: Lazy<Mutex<HashMap<PathBuf, bool>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 static ACTIVE_TASKS: AtomicUsize = AtomicUsize::new(0);
+static INLINE_OUTPUTS_VISIBLE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
 static ACTIVE_LABELS: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(Vec::new()));
 static OUTPUT_BUFFERS: Lazy<Mutex<HashMap<PathBuf, DocumentId>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
@@ -96,6 +98,10 @@ pub fn active_labels() -> Vec<String> {
         .clone()
 }
 
+pub fn toggle_inline_outputs() -> bool {
+    !INLINE_OUTPUTS_VISIBLE.fetch_xor(true, Ordering::SeqCst)
+}
+
 pub fn begin_execution(
     project: &Path,
     label: String,
@@ -137,6 +143,9 @@ pub struct InlineOutput {
 /// Return the most recent execution record for each execution label in a file.
 /// The records are snapshots, so an older completion cannot replace a newer run.
 pub fn inline_outputs(source_path: &Path, source_version: i32) -> Vec<InlineOutput> {
+    if !INLINE_OUTPUTS_VISIBLE.load(Ordering::SeqCst) {
+        return Vec::new();
+    }
     let executions = EXECUTIONS.lock().expect("Python execution mutex poisoned");
     let mut outputs = executions
         .values()

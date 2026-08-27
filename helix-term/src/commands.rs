@@ -564,6 +564,7 @@ impl MappableCommand {
         python_run_selection, "Run the selection in the project's persistent Python session",
         python_run_current_cell, "Run the current # %% cell in the project's persistent Python session",
         python_output, "Open Python execution history",
+        python_toggle_output, "Toggle inline Python output",
         python_sessions, "Show persistent Python sessions",
         python_interrupt, "Interrupt the current project's Python session",
         python_stop_all_sessions, "Stop all persistent Python sessions",
@@ -8880,6 +8881,15 @@ fn python_output(cx: &mut Context) {
     let id = cx.editor.new_file(Action::HorizontalSplit);
     python::set_output_buffer(&project, id);
     show_python_output(&mut cx.editor, &project, source_view_id, output);
+}
+
+fn python_toggle_output(cx: &mut Context) {
+    let visible = python::toggle_inline_outputs();
+    cx.editor.set_status(if visible {
+        "Python inline output: visible"
+    } else {
+        "Python inline output: hidden"
+    });
 }
 
 fn python_interrupt(cx: &mut Context) {
