@@ -10,7 +10,10 @@ use std::{
     ops::Range,
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use anyhow::{anyhow, Context as _};
@@ -36,14 +39,46 @@ struct Response {
     interrupted: bool,
 }
 
-static SESSIONS: Lazy<Mutex<HashMap<PathBuf, Session>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static SESSIONS: Lazy<Mutex<HashMap<PathBuf, Arc<Mutex<Session>>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 static SESSION_PIDS: Lazy<Mutex<HashMap<PathBuf, u32>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 static SESSION_RUNNING: Lazy<Mutex<HashMap<PathBuf, bool>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 static SESSION_INTERRUPTING: Lazy<Mutex<HashMap<PathBuf, bool>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+static ACTIVE_TASKS: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE_LABELS: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(Vec::new()));
 static OUTPUT_BUFFERS: Lazy<Mutex<HashMap<PathBuf, DocumentId>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+
+pub fn begin_task(label: String) {
+    ACTIVE_LABELS
+        .lock()
+        .expect("Python task-label mutex poisoned")
+        .push(label);
+    ACTIVE_TASKS.fetch_add(1, Ordering::SeqCst);
+}
+
+pub fn end_task(label: &str) -> usize {
+    let mut labels = ACTIVE_LABELS
+        .lock()
+        .expect("Python task-label mutex poisoned");
+    if let Some(index) = labels.iter().position(|item| item == label) {
+        labels.remove(index);
+    }
+    ACTIVE_TASKS.fetch_sub(1, Ordering::SeqCst) - 1
+}
+
+pub fn active_tasks() -> usize {
+    ACTIVE_TASKS.load(Ordering::SeqCst)
+}
+
+pub fn active_labels() -> Vec<String> {
+    ACTIVE_LABELS
+        .lock()
+        .expect("Python task-label mutex poisoned")
+        .clone()
+}
 
 /// Execute code in the persistent IPython session for `project`.
 ///
@@ -52,17 +87,20 @@ static OUTPUT_BUFFERS: Lazy<Mutex<HashMap<PathBuf, DocumentId>>> =
 /// room to replace the output scratch buffer with inline notebook decorations.
 pub fn execute(project: &Path, code: &str) -> anyhow::Result<String> {
     let mut sessions = SESSIONS.lock().expect("python session mutex poisoned");
-    if !sessions.contains_key(project) {
+    let session = if let Some(session) = sessions.get(project) {
+        session.clone()
+    } else {
         let session = spawn_session(project)?;
         SESSION_PIDS
             .lock()
             .expect("Python pid mutex poisoned")
             .insert(project.to_path_buf(), session.child.id());
-        sessions.insert(project.to_path_buf(), session);
-    }
-    let session = sessions
-        .get_mut(project)
-        .expect("session was just inserted");
+        let session = Arc::new(Mutex::new(session));
+        sessions.insert(project.to_path_buf(), session.clone());
+        session
+    };
+    drop(sessions);
+    let mut session = session.lock().expect("Python session mutex poisoned");
     SESSION_RUNNING
         .lock()
         .expect("Python running-state mutex poisoned")
@@ -112,9 +150,16 @@ pub fn sessions() -> Vec<PathBuf> {
 }
 
 pub fn stop_all() {
-    let mut sessions = SESSIONS.lock().expect("python session mutex poisoned");
-    for (_, mut session) in sessions.drain() {
-        let _ = session.child.kill();
+    let sessions = SESSIONS
+        .lock()
+        .expect("python session mutex poisoned")
+        .drain()
+        .map(|(_, session)| session)
+        .collect::<Vec<_>>();
+    for session in sessions {
+        if let Ok(mut session) = session.try_lock() {
+            let _ = session.child.kill();
+        }
     }
     SESSION_PIDS
         .lock()

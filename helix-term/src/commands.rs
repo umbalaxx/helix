@@ -8662,6 +8662,21 @@ fn python_run_selection(cx: &mut Context) {
     let (view, doc) = current!(cx.editor);
     let source_view_id = view.id;
     let text = doc.text().slice(..);
+    let primary = doc.selection(view.id).primary();
+    let start_line = text.char_to_line(primary.from()) + 1;
+    let end_line = text.char_to_line(primary.to().saturating_sub(1)) + 1;
+    let label = format!(
+        "{}:{}{}",
+        doc.path()
+            .and_then(|path| path.file_name())
+            .map_or_else(|| "[scratch]".into(), |name| name.to_string_lossy()),
+        start_line,
+        if start_line == end_line {
+            String::new()
+        } else {
+            format!("-{}", end_line)
+        }
+    );
     let code = doc
         .selection(view.id)
         .ranges()
@@ -8673,7 +8688,7 @@ fn python_run_selection(cx: &mut Context) {
         cx.editor.set_error("cannot run an empty selection");
         return;
     }
-    run_python_async(cx, project, source_view_id, code);
+    run_python_async(cx, project, source_view_id, code, label);
 }
 
 fn python_run_current_cell(cx: &mut Context) {
@@ -8691,6 +8706,14 @@ fn python_run_current_cell(cx: &mut Context) {
     let line = text.char_to_line(doc.selection(view.id).primary().cursor(text));
     let full_text = text.to_string();
     let cell = python::cell_at(&full_text, line);
+    let label = format!(
+        "{}:{}-{}",
+        doc.path()
+            .and_then(|path| path.file_name())
+            .map_or_else(|| "[scratch]".into(), |name| name.to_string_lossy()),
+        cell.lines.start + 1,
+        cell.lines.end
+    );
     let code = full_text
         .lines()
         .skip(cell.lines.start)
@@ -8708,7 +8731,7 @@ fn python_run_current_cell(cx: &mut Context) {
         cx.editor.set_error("current Python cell is empty");
         return;
     }
-    run_python_async(cx, project, source_view_id, code);
+    run_python_async(cx, project, source_view_id, code, label);
 }
 
 fn run_python_async(
@@ -8716,17 +8739,34 @@ fn run_python_async(
     project: std::path::PathBuf,
     source_view_id: ViewId,
     code: String,
+    label: String,
 ) {
+    python::begin_task(label.clone());
     cx.editor
-        .set_status(format!("Running Python session in {}", project.display()));
+        .set_status(format!("Python: running ({} task)", python::active_tasks()));
     let worker_project = project.clone();
     cx.jobs.callback(async move {
         let result = tokio::task::spawn_blocking(move || python::execute(&worker_project, &code))
             .await
-            .map_err(anyhow::Error::from)?;
+            .map_err(anyhow::Error::from);
+        let remaining = python::end_task(&label);
+        let result = result?;
         Ok(Callback::Editor(Box::new(move |editor| match result {
-            Ok(output) => show_python_output(editor, &project, source_view_id, output),
-            Err(error) => editor.set_error(error.to_string()),
+            Ok(output) => {
+                show_python_output(editor, &project, source_view_id, output);
+                if remaining == 0 {
+                    editor.set_status("Python: all tasks finished");
+                } else {
+                    editor.set_status(format!("Python: {remaining} task(s) remaining"));
+                }
+            }
+            Err(error) => {
+                if remaining == 0 {
+                    editor.set_error(format!("{} (Python: all tasks finished)", error));
+                } else {
+                    editor.set_error(error.to_string());
+                }
+            }
         })))
     });
 }
@@ -8746,16 +8786,24 @@ fn cancel_python_completion(cx: &mut Context) {
 
 fn python_sessions(cx: &mut Context) {
     let sessions = python::sessions();
-    if sessions.is_empty() {
-        cx.editor.set_status("No Python sessions");
+    let labels = python::active_labels();
+    let tasks = if labels.is_empty() {
+        "idle".to_owned()
     } else {
-        cx.editor.set_status(
+        format!("running: {}", labels.join(", "))
+    };
+    if sessions.is_empty() {
+        cx.editor
+            .set_status(format!("Python: {tasks}; no sessions"));
+    } else {
+        cx.editor.set_status(format!(
+            "Python: {tasks}; sessions: {}",
             sessions
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect::<Vec<_>>()
-                .join(" | "),
-        );
+                .join(" | ")
+        ));
     }
 }
 
