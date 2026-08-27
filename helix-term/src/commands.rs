@@ -8663,7 +8663,7 @@ fn python_run_selection(cx: &mut Context) {
     let start_line = text.char_to_line(primary.from()) + 1;
     let end_line = text.char_to_line(primary.to().saturating_sub(1)) + 1;
     let label = format!(
-        "{}:{}{}",
+        "selection: {}:{}{}",
         doc.path()
             .and_then(|path| path.file_name())
             .map_or_else(|| "[scratch]".into(), |name| name.to_string_lossy()),
@@ -8704,7 +8704,7 @@ fn python_run_current_cell(cx: &mut Context) {
     let full_text = text.to_string();
     let cell = python::cell_at(&full_text, line);
     let label = format!(
-        "{}:{}-{}",
+        "cell: {}:{}-{}",
         doc.path()
             .and_then(|path| path.file_name())
             .map_or_else(|| "[scratch]".into(), |name| name.to_string_lossy()),
