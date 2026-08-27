@@ -8609,6 +8609,7 @@ fn show_python_output(
     editor: &mut Editor,
     project: &std::path::Path,
     source_view_id: ViewId,
+    label: String,
     output: String,
 ) {
     let id = match python::output_buffer(project) {
@@ -8633,14 +8634,10 @@ fn show_python_output(
     let doc = doc_mut!(editor, &id);
     let view = view_mut!(editor);
     doc.ensure_view_init(view.id);
-    let mut output = output;
-    if !output.is_empty() && !output.ends_with('\n') {
-        output.push('\n');
-    }
-    let transaction = Transaction::insert(
+    let output = python::update_output(project, label, output);
+    let transaction = Transaction::change(
         doc.text(),
-        &Selection::point(doc.text().len_chars()),
-        output.into(),
+        [(0, doc.text().len_chars(), Some(output.into()))].into_iter(),
     );
     doc.apply(&transaction, view.id);
     doc.append_changes_to_history(view);
@@ -8753,7 +8750,7 @@ fn run_python_async(
         let result = result?;
         Ok(Callback::Editor(Box::new(move |editor| match result {
             Ok(output) => {
-                show_python_output(editor, &project, source_view_id, output);
+                show_python_output(editor, &project, source_view_id, label.clone(), output);
                 if remaining == 0 {
                     editor.set_status("Python: all tasks finished");
                 } else {

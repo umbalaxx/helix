@@ -5,7 +5,7 @@
 //! a document has cells, and a project session owns their execution state.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     io::{BufRead, BufReader, Write},
     ops::Range,
     path::{Path, PathBuf},
@@ -49,6 +49,8 @@ static SESSION_INTERRUPTING: Lazy<Mutex<HashMap<PathBuf, bool>>> =
 static ACTIVE_TASKS: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_LABELS: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(Vec::new()));
 static OUTPUT_BUFFERS: Lazy<Mutex<HashMap<PathBuf, DocumentId>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+static OUTPUTS: Lazy<Mutex<HashMap<PathBuf, BTreeMap<String, String>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 pub fn begin_task(label: String) {
@@ -232,6 +234,27 @@ pub fn set_output_buffer(project: &Path, id: DocumentId) {
         .lock()
         .expect("Python output mutex poisoned")
         .insert(project.to_path_buf(), id);
+}
+
+/// Replace the latest output associated with `label` and render all outputs
+/// for this project as a notebook-style inspection buffer.
+pub fn update_output(project: &Path, label: String, output: String) -> String {
+    let mut outputs = OUTPUTS.lock().expect("Python output mutex poisoned");
+    outputs
+        .entry(project.to_path_buf())
+        .or_default()
+        .insert(label, output);
+
+    let mut rendered = format!("Python output: {}\n\n", project.display());
+    for (label, output) in outputs.get(project).expect("output was just inserted") {
+        rendered.push_str(&format!("── {label} ──\n"));
+        rendered.push_str(output);
+        if !output.ends_with('\n') {
+            rendered.push('\n');
+        }
+        rendered.push('\n');
+    }
+    rendered
 }
 
 fn spawn_session(project: &Path) -> anyhow::Result<Session> {
