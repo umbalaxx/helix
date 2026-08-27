@@ -8655,7 +8655,6 @@ fn python_run_selection(cx: &mut Context) {
     let (view, doc) = current!(cx.editor);
     let source_view_id = view.id;
     let source_path = doc.path().map(std::path::Path::to_path_buf);
-    let source_version = doc.version();
     let text = doc.text().slice(..);
     let primary = doc.selection(view.id).primary();
     let start_line = text.char_to_line(primary.from()) + 1;
@@ -8689,8 +8688,8 @@ fn python_run_selection(cx: &mut Context) {
         project,
         source_view_id,
         source_path,
-        source_version,
         anchor_line,
+        None,
         code,
         label,
     );
@@ -8708,11 +8707,11 @@ fn python_run_current_cell(cx: &mut Context) {
     let (view, doc) = current!(cx.editor);
     let source_view_id = view.id;
     let source_path = doc.path().map(std::path::Path::to_path_buf);
-    let source_version = doc.version();
     let text = doc.text().slice(..);
     let line = text.char_to_line(doc.selection(view.id).primary().cursor(text));
     let full_text = text.to_string();
     let cell = python::cell_at(&full_text, line);
+    let cell_index = python::cell_index_at(&full_text, line);
     let anchor_line = cell.lines.end.saturating_sub(1);
     let label = format!(
         "cell: {}:{}-{}",
@@ -8744,8 +8743,8 @@ fn python_run_current_cell(cx: &mut Context) {
         project,
         source_view_id,
         source_path,
-        source_version,
         anchor_line,
+        Some(cell_index),
         code,
         label,
     );
@@ -8756,8 +8755,8 @@ fn run_python_async(
     project: std::path::PathBuf,
     source_view_id: ViewId,
     source_path: Option<std::path::PathBuf>,
-    source_version: i32,
     anchor_line: usize,
+    cell_index: Option<usize>,
     code: String,
     label: String,
 ) {
@@ -8767,7 +8766,7 @@ fn run_python_async(
         code.clone(),
         source_path,
         anchor_line,
-        source_version,
+        cell_index,
     );
     let started = std::time::Instant::now();
     python::begin_task(label.clone());

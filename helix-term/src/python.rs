@@ -60,7 +60,7 @@ struct ExecutionRecord {
     code: String,
     source_path: Option<PathBuf>,
     anchor_line: usize,
-    source_version: i32,
+    cell_index: Option<usize>,
     status: &'static str,
     output: String,
     elapsed_ms: Option<u128>,
@@ -108,7 +108,7 @@ pub fn begin_execution(
     code: String,
     source_path: Option<PathBuf>,
     anchor_line: usize,
-    source_version: i32,
+    cell_index: Option<usize>,
 ) -> usize {
     let id = NEXT_EXECUTION_ID.fetch_add(1, Ordering::Relaxed);
     EXECUTIONS
@@ -123,7 +123,7 @@ pub fn begin_execution(
                 code,
                 source_path,
                 anchor_line,
-                source_version,
+                cell_index,
                 status: "running",
                 output: String::new(),
                 elapsed_ms: None,
@@ -136,14 +136,14 @@ pub fn begin_execution(
 pub struct InlineOutput {
     pub anchor_line: usize,
     pub label: String,
-    pub status: &'static str,
+    pub status: String,
     pub elapsed_ms: Option<u128>,
     pub output: String,
 }
 
 /// Return the most recent execution record for each execution label in a file.
 /// The records are snapshots, so an older completion cannot replace a newer run.
-pub fn inline_outputs(source_path: &Path, source_version: i32) -> Vec<InlineOutput> {
+pub fn inline_outputs(source_path: &Path, source_text: &str) -> Vec<InlineOutput> {
     if !INLINE_OUTPUTS_VISIBLE.load(Ordering::SeqCst) {
         return Vec::new();
     }
@@ -152,19 +152,75 @@ pub fn inline_outputs(source_path: &Path, source_version: i32) -> Vec<InlineOutp
         .values()
         .flat_map(|records| records.iter())
         .filter_map(|(label, record)| {
-            (record.source_path.as_deref() == Some(source_path)
-                && record.source_version == source_version)
-                .then(|| InlineOutput {
-                    anchor_line: record.anchor_line,
-                    label: label.clone(),
-                    status: record.status,
-                    elapsed_ms: record.elapsed_ms,
-                    output: record.output.clone(),
-                })
+            if record.source_path.as_deref() != Some(source_path) {
+                return None;
+            }
+            let current_code = current_code(record, label, source_text);
+            if record.cell_index.is_none()
+                && current_code
+                    .as_ref()
+                    .map_or(true, |code| code.trim_end() != record.code.trim_end())
+            {
+                return None;
+            }
+            let status = if record.status == "completed"
+                && current_code
+                    .as_ref()
+                    .is_some_and(|code| code.trim_end() != record.code.trim_end())
+            {
+                "stale"
+            } else {
+                record.status
+            };
+            let anchor_line = record
+                .cell_index
+                .and_then(|index| cell_by_index(source_text, index))
+                .map_or(record.anchor_line, |cell| cell.lines.end.saturating_sub(1));
+            Some(InlineOutput {
+                anchor_line,
+                label: label.clone(),
+                status: status.to_owned(),
+                elapsed_ms: record.elapsed_ms,
+                output: record.output.clone(),
+            })
         })
         .collect::<Vec<_>>();
     outputs.sort_by_key(|output| output.anchor_line);
     outputs
+}
+
+fn current_code(record: &ExecutionRecord, label: &str, source_text: &str) -> Option<String> {
+    if let Some(cell_index) = record.cell_index {
+        return cell_code(source_text, cell_index);
+    }
+    let (_, location) = label.rsplit_once(':')?;
+    let (start, end) = location
+        .split_once('-')
+        .map_or((location, location), |range| range);
+    let start = start.parse::<usize>().ok()?.checked_sub(1)?;
+    let end = end.parse::<usize>().ok()?;
+    let code = source_text
+        .lines()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect::<Vec<_>>();
+    if code.is_empty() {
+        return None;
+    }
+    Some(code.join("\n"))
+}
+
+fn cell_code(source_text: &str, cell_index: usize) -> Option<String> {
+    let cell = cell_by_index(source_text, cell_index)?;
+    Some(
+        source_text
+            .lines()
+            .skip(cell.lines.start)
+            .take(cell.lines.len())
+            .filter(|line| !is_cell_marker(line))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }
 
 pub fn finish_execution(
@@ -455,6 +511,34 @@ pub fn cell_at(text: &str, line: usize) -> Cell {
         .unwrap_or(lines.len());
 
     Cell { lines: start..end }
+}
+
+/// Return the zero-based cell ordinal for the cell containing `line`.
+pub fn cell_index_at(text: &str, line: usize) -> usize {
+    let cell = cell_at(text, line);
+    text.lines()
+        .take(cell.lines.start)
+        .filter(|line| is_cell_marker(line))
+        .count()
+}
+
+fn cell_by_index(text: &str, index: usize) -> Option<Cell> {
+    let lines: Vec<&str> = text.lines().collect();
+    let markers: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, value)| is_cell_marker(value).then_some(index))
+        .collect();
+    let start = markers
+        .get(index)
+        .copied()
+        .or_else(|| (index == 0).then_some(0))?;
+    let end = markers
+        .iter()
+        .copied()
+        .find(|marker| *marker > start)
+        .unwrap_or(lines.len());
+    Some(Cell { lines: start..end })
 }
 
 fn is_cell_marker(line: &str) -> bool {

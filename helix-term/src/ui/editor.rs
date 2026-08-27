@@ -106,7 +106,8 @@ impl EditorView {
 
         if doc.language_id().as_deref() == Some("python") {
             if let Some(path) = doc.path() {
-                let outputs = crate::python::inline_outputs(path, doc.version());
+                let outputs =
+                    crate::python::inline_outputs(path, &doc.text().slice(..).to_string());
                 if !outputs.is_empty() {
                     text_annotations.add_line_annotation(Box::new(
                         text_decorations::PythonOutput::new(outputs.clone(), theme),
