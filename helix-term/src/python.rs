@@ -33,9 +33,15 @@ struct Request<'a> {
 struct Response {
     output: String,
     error: Option<String>,
+    interrupted: bool,
 }
 
 static SESSIONS: Lazy<Mutex<HashMap<PathBuf, Session>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static SESSION_PIDS: Lazy<Mutex<HashMap<PathBuf, u32>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static SESSION_RUNNING: Lazy<Mutex<HashMap<PathBuf, bool>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+static SESSION_INTERRUPTING: Lazy<Mutex<HashMap<PathBuf, bool>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 static OUTPUT_BUFFERS: Lazy<Mutex<HashMap<PathBuf, DocumentId>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
@@ -47,26 +53,53 @@ static OUTPUT_BUFFERS: Lazy<Mutex<HashMap<PathBuf, DocumentId>>> =
 pub fn execute(project: &Path, code: &str) -> anyhow::Result<String> {
     let mut sessions = SESSIONS.lock().expect("python session mutex poisoned");
     if !sessions.contains_key(project) {
-        sessions.insert(project.to_path_buf(), spawn_session(project)?);
+        let session = spawn_session(project)?;
+        SESSION_PIDS
+            .lock()
+            .expect("Python pid mutex poisoned")
+            .insert(project.to_path_buf(), session.child.id());
+        sessions.insert(project.to_path_buf(), session);
     }
     let session = sessions
         .get_mut(project)
         .expect("session was just inserted");
+    SESSION_RUNNING
+        .lock()
+        .expect("Python running-state mutex poisoned")
+        .insert(project.to_path_buf(), true);
+    SESSION_INTERRUPTING
+        .lock()
+        .expect("Python interrupt-state mutex poisoned")
+        .insert(project.to_path_buf(), false);
 
-    let request = serde_json::to_string(&Request { code })?;
-    writeln!(session.stdin, "{request}")?;
-    session.stdin.flush()?;
+    let result = (|| {
+        let request = serde_json::to_string(&Request { code })?;
+        writeln!(session.stdin, "{request}")?;
+        session.stdin.flush()?;
 
-    let mut line = String::new();
-    session
-        .stdout
-        .read_line(&mut line)
-        .context("Python session exited without returning a result")?;
-    let response: Response = serde_json::from_str(&line)?;
-    if let Some(error) = response.error {
-        return Err(anyhow!("{error}\n{}", response.output));
-    }
-    Ok(response.output)
+        let mut line = String::new();
+        session
+            .stdout
+            .read_line(&mut line)
+            .context("Python session exited without returning a result")?;
+        let response: Response = serde_json::from_str(&line)?;
+        if response.interrupted {
+            return Ok("[Python execution interrupted]\n".to_owned());
+        }
+        if let Some(error) = response.error {
+            return Err(anyhow!("{error}\n{}", response.output));
+        }
+        Ok(response.output)
+    })();
+    SESSION_RUNNING
+        .lock()
+        .expect("Python running-state mutex poisoned")
+        .insert(project.to_path_buf(), false);
+    SESSION_INTERRUPTING
+        .lock()
+        .expect("Python interrupt-state mutex poisoned")
+        .insert(project.to_path_buf(), false);
+    result
 }
 
 pub fn sessions() -> Vec<PathBuf> {
@@ -82,6 +115,62 @@ pub fn stop_all() {
     let mut sessions = SESSIONS.lock().expect("python session mutex poisoned");
     for (_, mut session) in sessions.drain() {
         let _ = session.child.kill();
+    }
+    SESSION_PIDS
+        .lock()
+        .expect("Python pid mutex poisoned")
+        .clear();
+    SESSION_RUNNING
+        .lock()
+        .expect("Python running-state mutex poisoned")
+        .clear();
+    SESSION_INTERRUPTING
+        .lock()
+        .expect("Python interrupt-state mutex poisoned")
+        .clear();
+}
+
+pub fn interrupt(project: &Path) -> anyhow::Result<()> {
+    let running = SESSION_RUNNING
+        .lock()
+        .expect("Python running-state mutex poisoned")
+        .get(project)
+        .copied()
+        .unwrap_or(false);
+    if !running {
+        return Err(anyhow!("no Python execution is currently running"));
+    }
+    let mut interrupting = SESSION_INTERRUPTING
+        .lock()
+        .expect("Python interrupt-state mutex poisoned");
+    if interrupting.get(project).copied().unwrap_or(false) {
+        return Ok(());
+    }
+    interrupting.insert(project.to_path_buf(), true);
+    drop(interrupting);
+    let pid = SESSION_PIDS
+        .lock()
+        .expect("Python pid mutex poisoned")
+        .get(project)
+        .copied()
+        .ok_or_else(|| anyhow!("no active Python session for {}", project.display()))?;
+
+    #[cfg(unix)]
+    {
+        // The helper is the direct child, so SIGINT is equivalent to pressing
+        // Ctrl-C in its IPython terminal while keeping the kernel alive.
+        let result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGINT) };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        Err(anyhow!(
+            "interrupting Python is not supported on this platform yet"
+        ))
     }
 }
 
@@ -110,9 +199,11 @@ fn spawn_session(project: &Path) -> anyhow::Result<Session> {
         // not list IPython yet.
         .args(["--with", "ipython", "python", "-u"])
         .arg(helper)
+        .current_dir(project)
+        .env("PYTHONPATH", project)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::null())
         .spawn()
         .context("could not start `uv`; is uv installed?")?;
     let stdin = child

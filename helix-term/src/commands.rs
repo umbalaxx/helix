@@ -564,6 +564,7 @@ impl MappableCommand {
         python_run_selection, "Run the selection in the project's persistent Python session",
         python_run_current_cell, "Run the current # %% cell in the project's persistent Python session",
         python_sessions, "Show persistent Python sessions",
+        python_interrupt, "Interrupt the current project's Python session",
         python_stop_all_sessions, "Stop all persistent Python sessions",
         steal_char_above, "Type the character above you",
         steal_char_below, "Type the character below you",
@@ -8605,33 +8606,32 @@ fn python_project(cx: &Context) -> anyhow::Result<std::path::PathBuf> {
 }
 
 fn show_python_output(
-    cx: &mut Context,
+    editor: &mut Editor,
     project: &std::path::Path,
     source_view_id: ViewId,
     output: String,
 ) {
     let id = match python::output_buffer(project) {
-        Some(id) if cx.editor.documents.contains_key(&id) => {
-            let output_view_id = cx
-                .editor
+        Some(id) if editor.documents.contains_key(&id) => {
+            let output_view_id = editor
                 .tree
                 .views()
                 .find_map(|(view, _)| (view.doc == id).then_some(view.id));
             if let Some(view_id) = output_view_id {
-                cx.editor.focus(view_id);
+                editor.focus(view_id);
             } else {
-                cx.editor.switch(id, Action::HorizontalSplit);
+                editor.switch(id, Action::HorizontalSplit);
             }
             id
         }
         _ => {
-            let id = cx.editor.new_file(Action::HorizontalSplit);
+            let id = editor.new_file(Action::HorizontalSplit);
             python::set_output_buffer(project, id);
             id
         }
     };
-    let doc = doc_mut!(cx.editor, &id);
-    let view = view_mut!(cx.editor);
+    let doc = doc_mut!(editor, &id);
+    let view = view_mut!(editor);
     doc.ensure_view_init(view.id);
     let mut output = output;
     if !output.is_empty() && !output.ends_with('\n') {
@@ -8647,7 +8647,7 @@ fn show_python_output(
     let end = doc.text().len_chars();
     doc.set_selection(view.id, Selection::point(end));
     view.ensure_cursor_in_view(doc, 0);
-    cx.editor.focus(source_view_id);
+    editor.focus(source_view_id);
 }
 
 fn python_run_selection(cx: &mut Context) {
@@ -8673,12 +8673,7 @@ fn python_run_selection(cx: &mut Context) {
         cx.editor.set_error("cannot run an empty selection");
         return;
     }
-    cx.editor
-        .set_status(format!("Running Python session in {}", project.display()));
-    match python::execute(&project, &code) {
-        Ok(output) => show_python_output(cx, &project, source_view_id, output),
-        Err(error) => cx.editor.set_error(error.to_string()),
-    }
+    run_python_async(cx, project, source_view_id, code);
 }
 
 fn python_run_current_cell(cx: &mut Context) {
@@ -8713,10 +8708,27 @@ fn python_run_current_cell(cx: &mut Context) {
         cx.editor.set_error("current Python cell is empty");
         return;
     }
-    match python::execute(&project, &code) {
-        Ok(output) => show_python_output(cx, &project, source_view_id, output),
-        Err(error) => cx.editor.set_error(error.to_string()),
-    }
+    run_python_async(cx, project, source_view_id, code);
+}
+
+fn run_python_async(
+    cx: &mut Context,
+    project: std::path::PathBuf,
+    source_view_id: ViewId,
+    code: String,
+) {
+    cx.editor
+        .set_status(format!("Running Python session in {}", project.display()));
+    let worker_project = project.clone();
+    cx.jobs.callback(async move {
+        let result = tokio::task::spawn_blocking(move || python::execute(&worker_project, &code))
+            .await
+            .map_err(anyhow::Error::from)?;
+        Ok(Callback::Editor(Box::new(move |editor| match result {
+            Ok(output) => show_python_output(editor, &project, source_view_id, output),
+            Err(error) => editor.set_error(error.to_string()),
+        })))
+    });
 }
 
 fn cancel_python_completion(cx: &mut Context) {
@@ -8744,6 +8756,20 @@ fn python_sessions(cx: &mut Context) {
                 .collect::<Vec<_>>()
                 .join(" | "),
         );
+    }
+}
+
+fn python_interrupt(cx: &mut Context) {
+    let project = match python_project(cx) {
+        Ok(project) => project,
+        Err(error) => {
+            cx.editor.set_error(error.to_string());
+            return;
+        }
+    };
+    match python::interrupt(&project) {
+        Ok(()) => cx.editor.set_status("Interrupted Python execution"),
+        Err(error) => cx.editor.set_error(error.to_string()),
     }
 }
 
