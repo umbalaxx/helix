@@ -56,6 +56,9 @@ static NEXT_EXECUTION_ID: AtomicUsize = AtomicUsize::new(1);
 struct ExecutionRecord {
     id: usize,
     code: String,
+    source_path: Option<PathBuf>,
+    anchor_line: usize,
+    source_version: i32,
     status: &'static str,
     output: String,
     elapsed_ms: Option<u128>,
@@ -93,7 +96,14 @@ pub fn active_labels() -> Vec<String> {
         .clone()
 }
 
-pub fn begin_execution(project: &Path, label: String, code: String) -> usize {
+pub fn begin_execution(
+    project: &Path,
+    label: String,
+    code: String,
+    source_path: Option<PathBuf>,
+    anchor_line: usize,
+    source_version: i32,
+) -> usize {
     let id = NEXT_EXECUTION_ID.fetch_add(1, Ordering::Relaxed);
     EXECUTIONS
         .lock()
@@ -105,12 +115,45 @@ pub fn begin_execution(project: &Path, label: String, code: String) -> usize {
             ExecutionRecord {
                 id,
                 code,
+                source_path,
+                anchor_line,
+                source_version,
                 status: "running",
                 output: String::new(),
                 elapsed_ms: None,
             },
         );
     id
+}
+
+#[derive(Debug, Clone)]
+pub struct InlineOutput {
+    pub anchor_line: usize,
+    pub label: String,
+    pub status: &'static str,
+    pub output: String,
+}
+
+/// Return the most recent execution record for each execution label in a file.
+/// The records are snapshots, so an older completion cannot replace a newer run.
+pub fn inline_outputs(source_path: &Path, source_version: i32) -> Vec<InlineOutput> {
+    let executions = EXECUTIONS.lock().expect("Python execution mutex poisoned");
+    let mut outputs = executions
+        .values()
+        .flat_map(|records| records.iter())
+        .filter_map(|(label, record)| {
+            (record.source_path.as_deref() == Some(source_path)
+                && record.source_version == source_version)
+                .then(|| InlineOutput {
+                    anchor_line: record.anchor_line,
+                    label: label.clone(),
+                    status: record.status,
+                    output: record.output.clone(),
+                })
+        })
+        .collect::<Vec<_>>();
+    outputs.sort_by_key(|output| output.anchor_line);
+    outputs
 }
 
 pub fn finish_execution(
@@ -131,6 +174,17 @@ pub fn finish_execution(
         }
     }
 
+    render_history(project, records)
+}
+
+pub fn history(project: &Path) -> Option<String> {
+    let executions = EXECUTIONS.lock().expect("Python execution mutex poisoned");
+    executions
+        .get(project)
+        .map(|records| render_history(project, records))
+}
+
+fn render_history(project: &Path, records: &BTreeMap<String, ExecutionRecord>) -> String {
     let mut rendered = format!("Python output: {}\n\n", project.display());
     for (label, record) in records.iter() {
         let timing = record

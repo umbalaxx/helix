@@ -563,6 +563,7 @@ impl MappableCommand {
         ai_suggest, "Ask Codestral for an insert-only ghost text suggestion",
         python_run_selection, "Run the selection in the project's persistent Python session",
         python_run_current_cell, "Run the current # %% cell in the project's persistent Python session",
+        python_output, "Open Python execution history",
         python_sessions, "Show persistent Python sessions",
         python_interrupt, "Interrupt the current project's Python session",
         python_stop_all_sessions, "Stop all persistent Python sessions",
@@ -8611,25 +8612,21 @@ fn show_python_output(
     source_view_id: ViewId,
     output: String,
 ) {
-    let id = match python::output_buffer(project) {
-        Some(id) if editor.documents.contains_key(&id) => {
-            let output_view_id = editor
-                .tree
-                .views()
-                .find_map(|(view, _)| (view.doc == id).then_some(view.id));
-            if let Some(view_id) = output_view_id {
-                editor.focus(view_id);
-            } else {
-                editor.switch(id, Action::HorizontalSplit);
-            }
-            id
-        }
-        _ => {
-            let id = editor.new_file(Action::HorizontalSplit);
-            python::set_output_buffer(project, id);
-            id
-        }
+    // Inline output is the default result surface. Only refresh the history
+    // buffer when it already exists; never create or open a split as a side
+    // effect of running Python.
+    let Some(id) = python::output_buffer(project).filter(|id| editor.documents.contains_key(id))
+    else {
+        return;
     };
+    let Some(output_view_id) = editor
+        .tree
+        .views()
+        .find_map(|(view, _)| (view.doc == id).then_some(view.id))
+    else {
+        return;
+    };
+    editor.focus(output_view_id);
     let doc = doc_mut!(editor, &id);
     let view = view_mut!(editor);
     doc.ensure_view_init(view.id);
@@ -8656,10 +8653,13 @@ fn python_run_selection(cx: &mut Context) {
     };
     let (view, doc) = current!(cx.editor);
     let source_view_id = view.id;
+    let source_path = doc.path().map(std::path::Path::to_path_buf);
+    let source_version = doc.version();
     let text = doc.text().slice(..);
     let primary = doc.selection(view.id).primary();
     let start_line = text.char_to_line(primary.from()) + 1;
     let end_line = text.char_to_line(primary.to().saturating_sub(1)) + 1;
+    let anchor_line = text.char_to_line(primary.to().saturating_sub(1));
     let label = format!(
         "selection: {}:{}{}",
         doc.path()
@@ -8683,7 +8683,16 @@ fn python_run_selection(cx: &mut Context) {
         cx.editor.set_error("cannot run an empty selection");
         return;
     }
-    run_python_async(cx, project, source_view_id, code, label);
+    run_python_async(
+        cx,
+        project,
+        source_view_id,
+        source_path,
+        source_version,
+        anchor_line,
+        code,
+        label,
+    );
 }
 
 fn python_run_current_cell(cx: &mut Context) {
@@ -8697,10 +8706,13 @@ fn python_run_current_cell(cx: &mut Context) {
     };
     let (view, doc) = current!(cx.editor);
     let source_view_id = view.id;
+    let source_path = doc.path().map(std::path::Path::to_path_buf);
+    let source_version = doc.version();
     let text = doc.text().slice(..);
     let line = text.char_to_line(doc.selection(view.id).primary().cursor(text));
     let full_text = text.to_string();
     let cell = python::cell_at(&full_text, line);
+    let anchor_line = cell.lines.end.saturating_sub(1);
     let label = format!(
         "cell: {}:{}-{}",
         doc.path()
@@ -8726,17 +8738,36 @@ fn python_run_current_cell(cx: &mut Context) {
         cx.editor.set_error("current Python cell is empty");
         return;
     }
-    run_python_async(cx, project, source_view_id, code, label);
+    run_python_async(
+        cx,
+        project,
+        source_view_id,
+        source_path,
+        source_version,
+        anchor_line,
+        code,
+        label,
+    );
 }
 
 fn run_python_async(
     cx: &mut Context,
     project: std::path::PathBuf,
     source_view_id: ViewId,
+    source_path: Option<std::path::PathBuf>,
+    source_version: i32,
+    anchor_line: usize,
     code: String,
     label: String,
 ) {
-    let execution_id = python::begin_execution(&project, label.clone(), code.clone());
+    let execution_id = python::begin_execution(
+        &project,
+        label.clone(),
+        code.clone(),
+        source_path,
+        anchor_line,
+        source_version,
+    );
     let started = std::time::Instant::now();
     python::begin_task(label.clone());
     cx.editor
@@ -8830,6 +8861,25 @@ fn python_sessions(cx: &mut Context) {
                 .join(" | ")
         ));
     }
+}
+
+fn python_output(cx: &mut Context) {
+    let project = match python_project(cx) {
+        Ok(project) => project,
+        Err(error) => {
+            cx.editor.set_error(error.to_string());
+            return;
+        }
+    };
+    let Some(output) = python::history(&project) else {
+        cx.editor
+            .set_error("no Python execution history for this project");
+        return;
+    };
+    let source_view_id = current_ref!(cx.editor).0.id;
+    let id = cx.editor.new_file(Action::HorizontalSplit);
+    python::set_output_buffer(&project, id);
+    show_python_output(&mut cx.editor, &project, source_view_id, output);
 }
 
 fn python_interrupt(cx: &mut Context) {

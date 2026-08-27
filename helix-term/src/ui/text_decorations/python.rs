@@ -1,0 +1,96 @@
+use helix_core::text_annotations::LineAnnotation;
+use helix_core::Position;
+use helix_view::Theme;
+
+use crate::{
+    python::InlineOutput,
+    ui::document::{LinePos, TextRenderer},
+};
+
+use super::Decoration;
+
+const MAX_OUTPUT_LINES: usize = 200;
+
+/// Renders the latest result of Python executions as virtual lines below the
+/// source line that produced them. It is deliberately a decoration: the
+/// output is never inserted into, or saved with, the source document.
+pub struct PythonOutput {
+    outputs: Vec<InlineOutput>,
+    style: helix_view::theme::Style,
+    output_style: helix_view::theme::Style,
+}
+
+impl PythonOutput {
+    pub fn new(outputs: Vec<InlineOutput>, theme: &Theme) -> Self {
+        Self {
+            outputs,
+            style: theme.get("ui.virtual.inlay-hint"),
+            output_style: theme.get("ui.virtual.wrap"),
+        }
+    }
+
+    fn output_lines(output: &InlineOutput) -> usize {
+        1 + output.output.lines().take(MAX_OUTPUT_LINES).count()
+    }
+
+    fn draw(&self, renderer: &mut TextRenderer, pos: LinePos, virt_off: Position) -> Position {
+        let outputs = self
+            .outputs
+            .iter()
+            .filter(|output| output.anchor_line == pos.doc_line)
+            .collect::<Vec<_>>();
+        if outputs.is_empty() {
+            return Position::new(0, 0);
+        }
+
+        let mut row = pos.visual_line + virt_off.row as u16;
+        let x = renderer.viewport.x.saturating_add(1);
+        let width = renderer.viewport.width.saturating_sub(1) as usize;
+        let mut rows = 0;
+
+        for output in outputs {
+            let header = format!("▾ {} [{}]", output.label, output.status);
+            renderer.set_stringn(x, row, &header, width, self.style);
+            row = row.saturating_add(1);
+            rows += 1;
+
+            for line in output.output.lines().take(MAX_OUTPUT_LINES) {
+                let text = format!("│ {line}");
+                renderer.set_stringn(x, row, &text, width, self.output_style);
+                row = row.saturating_add(1);
+                rows += 1;
+            }
+        }
+
+        Position::new(rows, 0)
+    }
+}
+
+impl LineAnnotation for PythonOutput {
+    fn insert_virtual_lines(
+        &mut self,
+        _line_end_char_idx: usize,
+        _line_end_visual_pos: Position,
+        doc_line: usize,
+    ) -> Position {
+        Position::new(
+            self.outputs
+                .iter()
+                .filter(|output| output.anchor_line == doc_line)
+                .map(Self::output_lines)
+                .sum(),
+            0,
+        )
+    }
+}
+
+impl Decoration for PythonOutput {
+    fn render_virt_lines(
+        &mut self,
+        renderer: &mut TextRenderer,
+        pos: LinePos,
+        virt_off: Position,
+    ) -> Position {
+        self.draw(renderer, pos, virt_off)
+    }
+}
