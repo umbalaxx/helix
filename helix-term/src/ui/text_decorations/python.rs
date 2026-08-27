@@ -1,8 +1,9 @@
 use helix_core::text_annotations::LineAnnotation;
 use helix_core::Position;
 use helix_view::Theme;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use once_cell::sync::Lazy;
+use std::collections::HashSet;
+use std::sync::Mutex;
 
 use crate::{
     python::InlineOutput,
@@ -12,6 +13,8 @@ use crate::{
 use super::Decoration;
 
 const MAX_OUTPUT_LINES: usize = 200;
+static FINAL_OUTPUT_LINES: Lazy<Mutex<HashSet<(usize, usize)>>> =
+    Lazy::new(|| Mutex::new(HashSet::new()));
 
 /// Renders the latest result of Python executions as virtual lines below the
 /// source line that produced them. It is deliberately a decoration: the
@@ -20,28 +23,22 @@ pub struct PythonOutput {
     outputs: Vec<InlineOutput>,
     style: helix_view::theme::Style,
     output_style: helix_view::theme::Style,
-    final_lines: Arc<Mutex<HashMap<usize, bool>>>,
 }
 
 impl PythonOutput {
-    pub fn pair(outputs: Vec<InlineOutput>, theme: &Theme) -> (Self, Self) {
-        let state = Arc::new(Mutex::new(HashMap::new()));
-        (
-            Self::with_state(outputs.clone(), theme, state.clone()),
-            Self::with_state(outputs, theme, state),
-        )
-    }
-
-    fn with_state(
-        outputs: Vec<InlineOutput>,
-        theme: &Theme,
-        final_lines: Arc<Mutex<HashMap<usize, bool>>>,
-    ) -> Self {
+    pub fn new(outputs: Vec<InlineOutput>, theme: &Theme) -> Self {
         Self {
             outputs,
             style: theme.get("ui.virtual.inlay-hint"),
             output_style: theme.get("ui.virtual.wrap"),
-            final_lines,
+        }
+    }
+
+    pub fn annotation(outputs: Vec<InlineOutput>) -> Self {
+        Self {
+            outputs,
+            style: Default::default(),
+            output_style: Default::default(),
         }
     }
 
@@ -70,13 +67,10 @@ impl PythonOutput {
             .iter()
             .filter(|output| {
                 output.anchor_line == pos.doc_line
-                    && self
-                        .final_lines
+                    && FINAL_OUTPUT_LINES
                         .lock()
                         .expect("Python output state mutex poisoned")
-                        .get(&pos.doc_line)
-                        .copied()
-                        .unwrap_or(false)
+                        .contains(&(output.anchor_line, output.anchor_char))
             })
             .collect::<Vec<_>>();
         if outputs.is_empty() {
@@ -113,13 +107,21 @@ impl LineAnnotation for PythonOutput {
         _line_end_visual_pos: Position,
         doc_line: usize,
     ) -> Position {
-        let is_final = self.outputs.iter().any(|output| {
-            output.anchor_line == doc_line && output.anchor_char <= line_end_char_idx
-        });
-        self.final_lines
+        let mut final_lines = FINAL_OUTPUT_LINES
             .lock()
-            .expect("Python output state mutex poisoned")
-            .insert(doc_line, is_final);
+            .expect("Python output state mutex poisoned");
+        for output in self
+            .outputs
+            .iter()
+            .filter(|output| output.anchor_line == doc_line)
+        {
+            let key = (output.anchor_line, output.anchor_char);
+            if output.anchor_char <= line_end_char_idx {
+                final_lines.insert(key);
+            } else {
+                final_lines.remove(&key);
+            }
+        }
         Position::new(
             self.outputs
                 .iter()

@@ -11,7 +11,7 @@ use crate::{
 use helix_core::{
     char_idx_at_visual_offset,
     doc_formatter::TextFormat,
-    text_annotations::TextAnnotations,
+    text_annotations::{LineAnnotation, TextAnnotations},
     visual_offset_from_anchor, visual_offset_from_block, Position, RopeSlice, Selection,
     Transaction,
     VisualOffsetError::{PosAfterMaxRow, PosBeforeAnchorRow},
@@ -20,7 +20,19 @@ use helix_core::{
 use std::{
     collections::{HashMap, VecDeque},
     fmt,
+    sync::OnceLock,
 };
+
+type ExternalLineAnnotationProvider = fn(&Document) -> Option<Box<dyn LineAnnotation>>;
+static EXTERNAL_LINE_ANNOTATION_PROVIDER: OnceLock<ExternalLineAnnotationProvider> =
+    OnceLock::new();
+
+/// Register an application-specific virtual-line provider. This lets terminal
+/// integrations participate in cursor and viewport calculations as well as
+/// rendering.
+pub fn set_external_line_annotation_provider(provider: ExternalLineAnnotationProvider) {
+    let _ = EXTERNAL_LINE_ANNOTATION_PROVIDER.set(provider);
+}
 
 const JUMP_LIST_CAPACITY: usize = 30;
 
@@ -525,6 +537,12 @@ impl View {
                 doc.view_offset(self.id).horizontal_offset,
                 inline_diagnotstics_config,
             ));
+        }
+
+        if let Some(provider) = EXTERNAL_LINE_ANNOTATION_PROVIDER.get() {
+            if let Some(annotation) = provider(doc) {
+                text_annotations.add_line_annotation(annotation);
+            }
         }
 
         text_annotations
