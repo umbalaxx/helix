@@ -1,0 +1,195 @@
+//! Python execution support.
+//!
+//! This module deliberately keeps execution state separate from the edited
+//! document.  It is the model used by the eventual inline notebook renderer:
+//! a document has cells, and a project session owns their execution state.
+
+use std::{
+    collections::HashMap,
+    io::{BufRead, BufReader, Write},
+    ops::Range,
+    path::{Path, PathBuf},
+    process::{Child, ChildStdin, Command, Stdio},
+    sync::Mutex,
+};
+
+use anyhow::{anyhow, Context as _};
+use helix_view::DocumentId;
+use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
+
+struct Session {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<std::process::ChildStdout>,
+}
+
+#[derive(Serialize)]
+struct Request<'a> {
+    code: &'a str,
+}
+
+#[derive(Deserialize)]
+struct Response {
+    output: String,
+    error: Option<String>,
+}
+
+static SESSIONS: Lazy<Mutex<HashMap<PathBuf, Session>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static OUTPUT_BUFFERS: Lazy<Mutex<HashMap<PathBuf, DocumentId>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Execute code in the persistent IPython session for `project`.
+///
+/// The first version intentionally uses a small line-delimited protocol. It
+/// keeps the process boundary independent from terminal prompts and leaves us
+/// room to replace the output scratch buffer with inline notebook decorations.
+pub fn execute(project: &Path, code: &str) -> anyhow::Result<String> {
+    let mut sessions = SESSIONS.lock().expect("python session mutex poisoned");
+    if !sessions.contains_key(project) {
+        sessions.insert(project.to_path_buf(), spawn_session(project)?);
+    }
+    let session = sessions
+        .get_mut(project)
+        .expect("session was just inserted");
+
+    let request = serde_json::to_string(&Request { code })?;
+    writeln!(session.stdin, "{request}")?;
+    session.stdin.flush()?;
+
+    let mut line = String::new();
+    session
+        .stdout
+        .read_line(&mut line)
+        .context("Python session exited without returning a result")?;
+    let response: Response = serde_json::from_str(&line)?;
+    if let Some(error) = response.error {
+        return Err(anyhow!("{error}\n{}", response.output));
+    }
+    Ok(response.output)
+}
+
+pub fn sessions() -> Vec<PathBuf> {
+    SESSIONS
+        .lock()
+        .expect("python session mutex poisoned")
+        .keys()
+        .cloned()
+        .collect()
+}
+
+pub fn stop_all() {
+    let mut sessions = SESSIONS.lock().expect("python session mutex poisoned");
+    for (_, mut session) in sessions.drain() {
+        let _ = session.child.kill();
+    }
+}
+
+pub fn output_buffer(project: &Path) -> Option<DocumentId> {
+    OUTPUT_BUFFERS
+        .lock()
+        .expect("Python output mutex poisoned")
+        .get(project)
+        .copied()
+}
+
+pub fn set_output_buffer(project: &Path, id: DocumentId) {
+    OUTPUT_BUFFERS
+        .lock()
+        .expect("Python output mutex poisoned")
+        .insert(project.to_path_buf(), id);
+}
+
+fn spawn_session(project: &Path) -> anyhow::Result<Session> {
+    let helper = helix_loader::runtime_file("python/helix_session.py");
+    let mut child = Command::new("uv")
+        .args(["run", "--project"])
+        .arg(project)
+        // Keep the project environment authoritative, but make the optional
+        // interactive dependency available even when the project itself does
+        // not list IPython yet.
+        .args(["--with", "ipython", "python", "-u"])
+        .arg(helper)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("could not start `uv`; is uv installed?")?;
+    let stdin = child
+        .stdin
+        .take()
+        .context("Python session stdin unavailable")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("Python session stdout unavailable")?;
+    Ok(Session {
+        child,
+        stdin,
+        stdout: BufReader::new(stdout),
+    })
+}
+
+/// Find the project root used by uv, starting at a Python file's directory.
+pub fn project_root(file: Option<&Path>, cwd: &Path) -> Option<PathBuf> {
+    let start = file.and_then(Path::parent).unwrap_or(cwd);
+    start
+        .ancestors()
+        .find(|path| path.join("pyproject.toml").is_file())
+        .map(Path::to_path_buf)
+        .or_else(|| Some(cwd.to_path_buf()))
+}
+
+/// A Python cell delimited by a `# %%` marker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cell {
+    /// Zero-based line range, with the end excluded.
+    pub lines: Range<usize>,
+}
+
+/// Return the cell containing `line` (or the nearest cell after it).
+pub fn cell_at(text: &str, line: usize) -> Cell {
+    let lines: Vec<&str> = text.lines().collect();
+    let markers: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, value)| is_cell_marker(value).then_some(index))
+        .collect();
+
+    let start = markers
+        .iter()
+        .copied()
+        .rev()
+        .find(|marker| *marker <= line)
+        .unwrap_or(0);
+    let end = markers
+        .iter()
+        .copied()
+        .find(|marker| *marker > start)
+        .unwrap_or(lines.len());
+
+    Cell { lines: start..end }
+}
+
+fn is_cell_marker(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed == "#%%" || trimmed.starts_with("# %%")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_hash_percent_cells() {
+        let text = "# %%\na = 1\n# %% [markdown]\ntext\n#%%\nb = 2\n";
+        assert_eq!(cell_at(text, 1).lines, 0..2);
+        assert_eq!(cell_at(text, 3).lines, 2..4);
+        assert_eq!(cell_at(text, 5).lines, 4..6);
+    }
+
+    #[test]
+    fn code_before_first_marker_is_first_cell() {
+        assert_eq!(cell_at("import os\n# %%\nx = 1\n", 0).lines, 0..1);
+    }
+}

@@ -76,7 +76,7 @@ use crate::{
     compositor::{self, Component, Compositor},
     ctrl, filter_picker_entry,
     job::Callback,
-    key,
+    key, python,
     ui::{self, overlay::overlaid, DiffPreview, Picker, PickerColumn, Popup, Prompt, PromptEvent},
 };
 
@@ -561,6 +561,10 @@ impl MappableCommand {
         completion, "Invoke completion popup",
         ai_edit, "Ask Codex to insert or replace text at the primary selection",
         ai_suggest, "Ask Codestral for an insert-only ghost text suggestion",
+        python_run_selection, "Run the selection in the project's persistent Python session",
+        python_run_current_cell, "Run the current # %% cell in the project's persistent Python session",
+        python_sessions, "Show persistent Python sessions",
+        python_stop_all_sessions, "Stop all persistent Python sessions",
         steal_char_above, "Type the character above you",
         steal_char_below, "Type the character below you",
         hover, "Show docs for item under cursor",
@@ -8588,6 +8592,164 @@ enum ShellBehavior {
 
 fn shell_pipe(cx: &mut Context) {
     shell_prompt_for_behavior(cx, "pipe:".into(), ShellBehavior::Replace);
+}
+
+fn python_project(cx: &Context) -> anyhow::Result<std::path::PathBuf> {
+    let (_, doc) = current_ref!(cx.editor);
+    ensure!(
+        doc.language_id() == Some("python"),
+        "current buffer is not Python"
+    );
+    let cwd = doc.workspace_root().to_path_buf();
+    Ok(python::project_root(doc.path(), &cwd).unwrap_or(cwd))
+}
+
+fn show_python_output(
+    cx: &mut Context,
+    project: &std::path::Path,
+    source_view_id: ViewId,
+    output: String,
+) {
+    let id = match python::output_buffer(project) {
+        Some(id) if cx.editor.documents.contains_key(&id) => {
+            let output_view_id = cx
+                .editor
+                .tree
+                .views()
+                .find_map(|(view, _)| (view.doc == id).then_some(view.id));
+            if let Some(view_id) = output_view_id {
+                cx.editor.focus(view_id);
+            } else {
+                cx.editor.switch(id, Action::HorizontalSplit);
+            }
+            id
+        }
+        _ => {
+            let id = cx.editor.new_file(Action::HorizontalSplit);
+            python::set_output_buffer(project, id);
+            id
+        }
+    };
+    let doc = doc_mut!(cx.editor, &id);
+    let view = view_mut!(cx.editor);
+    doc.ensure_view_init(view.id);
+    let mut output = output;
+    if !output.is_empty() && !output.ends_with('\n') {
+        output.push('\n');
+    }
+    let transaction = Transaction::insert(
+        doc.text(),
+        &Selection::point(doc.text().len_chars()),
+        output.into(),
+    );
+    doc.apply(&transaction, view.id);
+    doc.append_changes_to_history(view);
+    let end = doc.text().len_chars();
+    doc.set_selection(view.id, Selection::point(end));
+    view.ensure_cursor_in_view(doc, 0);
+    cx.editor.focus(source_view_id);
+}
+
+fn python_run_selection(cx: &mut Context) {
+    cancel_python_completion(cx);
+    let project = match python_project(cx) {
+        Ok(project) => project,
+        Err(error) => {
+            cx.editor.set_error(error.to_string());
+            return;
+        }
+    };
+    let (view, doc) = current!(cx.editor);
+    let source_view_id = view.id;
+    let text = doc.text().slice(..);
+    let code = doc
+        .selection(view.id)
+        .ranges()
+        .iter()
+        .map(|range| range.slice(text).to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if code.trim().is_empty() {
+        cx.editor.set_error("cannot run an empty selection");
+        return;
+    }
+    cx.editor
+        .set_status(format!("Running Python session in {}", project.display()));
+    match python::execute(&project, &code) {
+        Ok(output) => show_python_output(cx, &project, source_view_id, output),
+        Err(error) => cx.editor.set_error(error.to_string()),
+    }
+}
+
+fn python_run_current_cell(cx: &mut Context) {
+    cancel_python_completion(cx);
+    let project = match python_project(cx) {
+        Ok(project) => project,
+        Err(error) => {
+            cx.editor.set_error(error.to_string());
+            return;
+        }
+    };
+    let (view, doc) = current!(cx.editor);
+    let source_view_id = view.id;
+    let text = doc.text().slice(..);
+    let line = text.char_to_line(doc.selection(view.id).primary().cursor(text));
+    let full_text = text.to_string();
+    let cell = python::cell_at(&full_text, line);
+    let code = full_text
+        .lines()
+        .skip(cell.lines.start)
+        .take(cell.lines.end.saturating_sub(cell.lines.start))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let code = code
+        .lines()
+        .filter(|line| {
+            !line.trim_start().starts_with("# %%") && !line.trim_start().starts_with("#%%")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if code.trim().is_empty() {
+        cx.editor.set_error("current Python cell is empty");
+        return;
+    }
+    match python::execute(&project, &code) {
+        Ok(output) => show_python_output(cx, &project, source_view_id, output),
+        Err(error) => cx.editor.set_error(error.to_string()),
+    }
+}
+
+fn cancel_python_completion(cx: &mut Context) {
+    // Execution can take long enough for a completion/AI response to arrive
+    // after this command changes focus. Do not leave a popup around with an
+    // insertion point belonging to the pre-execution document state.
+    cx.callback.push(Box::new(|compositor, cx| {
+        if let Some(editor_view) = compositor.find::<ui::EditorView>() {
+            editor_view.clear_completion(cx.editor);
+        }
+    }));
+    let (view, doc) = current!(cx.editor);
+    doc.cancel_ai_suggestion(view.id);
+}
+
+fn python_sessions(cx: &mut Context) {
+    let sessions = python::sessions();
+    if sessions.is_empty() {
+        cx.editor.set_status("No Python sessions");
+    } else {
+        cx.editor.set_status(
+            sessions
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" | "),
+        );
+    }
+}
+
+fn python_stop_all_sessions(cx: &mut Context) {
+    python::stop_all();
+    cx.editor.set_status("Stopped all Python sessions");
 }
 
 fn shell_pipe_to(cx: &mut Context) {

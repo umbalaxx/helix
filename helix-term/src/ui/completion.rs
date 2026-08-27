@@ -636,7 +636,15 @@ fn lsp_item_to_transaction(
         // we can still generate a transaction regardless but if the
         // document changed (and not just the selection) then we will
         // likely delete the wrong text (same if we applied an edit sent by the LS)
-        debug_assert!(primary_cursor == trigger_offset);
+        if primary_cursor != trigger_offset {
+            // A long-running command can allow an asynchronous completion
+            // response to outlive the popup's original cursor. Never apply a
+            // stale insert-only item at a potentially wrong location.
+            log::debug!(
+                "discarding stale completion item: cursor={primary_cursor}, trigger={trigger_offset}"
+            );
+            return (Transaction::new(doc.text()), None);
+        }
         (None, new_text)
     };
 
