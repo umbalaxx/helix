@@ -80,15 +80,22 @@ impl PythonOutput {
         let mut row = pos.visual_line + virt_off.row as u16;
         let x = renderer.viewport.x.saturating_add(1);
         let width = renderer.viewport.width.saturating_sub(1) as usize;
+        let bottom = renderer.offset.row + renderer.viewport.height as usize;
         let mut rows = 0;
 
         for output in outputs {
+            if row as usize >= bottom {
+                break;
+            }
             let header = Self::title(output);
             renderer.set_stringn(x, row, &header, width, self.style);
             row = row.saturating_add(1);
             rows += 1;
 
             for line in output.output.lines().take(MAX_OUTPUT_LINES) {
+                if row as usize >= bottom {
+                    break;
+                }
                 let text = format!("│ {line}");
                 renderer.set_stringn(x, row, &text, width, self.output_style);
                 row = row.saturating_add(1);
