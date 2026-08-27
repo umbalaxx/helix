@@ -18,7 +18,7 @@ use helix_core::{
     graphemes::{next_grapheme_boundary, prev_grapheme_boundary},
     movement::Direction,
     syntax::{self, OverlayHighlights},
-    text_annotations::TextAnnotations,
+    text_annotations::{LineAnnotation, TextAnnotations},
     unicode::width::UnicodeWidthStr,
     visual_offset_from_block, Change, Position, Range, Selection,
 };
@@ -68,6 +68,7 @@ pub enum InsertEvent {
 
 impl EditorView {
     pub fn new(keymaps: Keymaps) -> Self {
+        helix_view::view::set_external_line_annotation_provider(python_line_annotation);
         Self {
             keymaps,
             on_next_key: None,
@@ -101,7 +102,7 @@ impl EditorView {
 
         let view_offset = doc.view_offset(view.id);
 
-        let mut text_annotations = view.text_annotations(doc, Some(theme));
+        let text_annotations = view.text_annotations(doc, Some(theme));
         let mut decorations = DecorationManager::default();
 
         if doc.language_id().as_deref() == Some("python") {
@@ -109,9 +110,6 @@ impl EditorView {
                 let outputs =
                     crate::python::inline_outputs(path, &doc.text().slice(..).to_string());
                 if !outputs.is_empty() {
-                    text_annotations.add_line_annotation(Box::new(
-                        text_decorations::PythonOutput::new(outputs.clone(), theme),
-                    ));
                     decorations.add_decoration(text_decorations::PythonOutput::new(outputs, theme));
                 }
             }
@@ -1321,6 +1319,16 @@ impl EditorView {
 
         EventResult::Ignored(None)
     }
+}
+
+fn python_line_annotation(doc: &Document) -> Option<Box<dyn LineAnnotation>> {
+    if doc.language_id() != Some("python") {
+        return None;
+    }
+    let path = doc.path()?;
+    let outputs = crate::python::inline_outputs(path, &doc.text().slice(..).to_string());
+    (!outputs.is_empty())
+        .then(|| Box::new(text_decorations::PythonOutput::annotation(outputs)) as _)
 }
 
 /// Whether the focused doc's workspace is in restricted mode and running `trust` would

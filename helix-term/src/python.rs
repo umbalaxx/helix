@@ -111,30 +111,36 @@ pub fn begin_execution(
     cell_index: Option<usize>,
 ) -> usize {
     let id = NEXT_EXECUTION_ID.fetch_add(1, Ordering::Relaxed);
-    EXECUTIONS
-        .lock()
-        .expect("Python execution mutex poisoned")
-        .entry(project.to_path_buf())
-        .or_default()
-        .insert(
-            label,
-            ExecutionRecord {
-                id,
-                code,
-                source_path,
-                anchor_line,
-                cell_index,
-                status: "running",
-                output: String::new(),
-                elapsed_ms: None,
-            },
-        );
+    let mut executions = EXECUTIONS.lock().expect("Python execution mutex poisoned");
+    let records = executions.entry(project.to_path_buf()).or_default();
+    // Cell labels include line ranges, which change as the cell is edited.
+    // Replace the previous record using the stable file-local cell identity.
+    if let Some(cell_index) = cell_index {
+        records.retain(|_, record| {
+            !(record.source_path.as_deref() == source_path.as_deref()
+                && record.cell_index == Some(cell_index))
+        });
+    }
+    records.insert(
+        label,
+        ExecutionRecord {
+            id,
+            code,
+            source_path,
+            anchor_line,
+            cell_index,
+            status: "running",
+            output: String::new(),
+            elapsed_ms: None,
+        },
+    );
     id
 }
 
 #[derive(Debug, Clone)]
 pub struct InlineOutput {
     pub anchor_line: usize,
+    pub anchor_char: usize,
     pub label: String,
     pub status: String,
     pub elapsed_ms: Option<u128>,
@@ -176,8 +182,10 @@ pub fn inline_outputs(source_path: &Path, source_text: &str) -> Vec<InlineOutput
                 .cell_index
                 .and_then(|index| cell_by_index(source_text, index))
                 .map_or(record.anchor_line, |cell| cell.lines.end.saturating_sub(1));
+            let anchor_char = line_end_char(source_text, anchor_line);
             Some(InlineOutput {
                 anchor_line,
+                anchor_char,
                 label: label.clone(),
                 status: status.to_owned(),
                 elapsed_ms: record.elapsed_ms,
@@ -187,6 +195,19 @@ pub fn inline_outputs(source_path: &Path, source_text: &str) -> Vec<InlineOutput
         .collect::<Vec<_>>();
     outputs.sort_by_key(|output| output.anchor_line);
     outputs
+}
+
+fn line_end_char(source_text: &str, line: usize) -> usize {
+    let mut current_line = 0;
+    for (char_idx, character) in source_text.chars().enumerate() {
+        if current_line == line && character == '\n' {
+            return char_idx + 1;
+        }
+        if character == '\n' {
+            current_line += 1;
+        }
+    }
+    source_text.chars().count()
 }
 
 fn current_code(record: &ExecutionRecord, label: &str, source_text: &str) -> Option<String> {
