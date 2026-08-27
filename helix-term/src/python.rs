@@ -137,6 +137,7 @@ pub struct InlineOutput {
     pub anchor_line: usize,
     pub label: String,
     pub status: &'static str,
+    pub elapsed_ms: Option<u128>,
     pub output: String,
 }
 
@@ -157,6 +158,7 @@ pub fn inline_outputs(source_path: &Path, source_version: i32) -> Vec<InlineOutp
                     anchor_line: record.anchor_line,
                     label: label.clone(),
                     status: record.status,
+                    elapsed_ms: record.elapsed_ms,
                     output: record.output.clone(),
                 })
         })

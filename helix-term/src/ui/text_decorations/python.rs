@@ -33,6 +33,21 @@ impl PythonOutput {
         1 + output.output.lines().take(MAX_OUTPUT_LINES).count()
     }
 
+    fn title(output: &InlineOutput) -> String {
+        let label = output
+            .label
+            .split_once(':')
+            .and_then(|(kind, rest)| rest.rsplit_once(':').map(|(_, lines)| (kind, lines)))
+            .map_or_else(
+                || output.label.clone(),
+                |(kind, lines)| format!("{kind} {lines}"),
+            );
+        let timing = output
+            .elapsed_ms
+            .map_or_else(String::new, |ms| format!(", {ms}ms"));
+        format!("▾ {label} [{}{}]", output.status, timing)
+    }
+
     fn draw(&self, renderer: &mut TextRenderer, pos: LinePos, virt_off: Position) -> Position {
         let outputs = self
             .outputs
@@ -49,7 +64,7 @@ impl PythonOutput {
         let mut rows = 0;
 
         for output in outputs {
-            let header = format!("▾ {} [{}]", output.label, output.status);
+            let header = Self::title(output);
             renderer.set_stringn(x, row, &header, width, self.style);
             row = row.saturating_add(1);
             rows += 1;
