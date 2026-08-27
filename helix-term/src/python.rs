@@ -111,24 +111,29 @@ pub fn begin_execution(
     cell_index: Option<usize>,
 ) -> usize {
     let id = NEXT_EXECUTION_ID.fetch_add(1, Ordering::Relaxed);
-    EXECUTIONS
-        .lock()
-        .expect("Python execution mutex poisoned")
-        .entry(project.to_path_buf())
-        .or_default()
-        .insert(
-            label,
-            ExecutionRecord {
-                id,
-                code,
-                source_path,
-                anchor_line,
-                cell_index,
-                status: "running",
-                output: String::new(),
-                elapsed_ms: None,
-            },
-        );
+    let mut executions = EXECUTIONS.lock().expect("Python execution mutex poisoned");
+    let records = executions.entry(project.to_path_buf()).or_default();
+    // Cell labels include line ranges, which change as the cell is edited.
+    // Replace the previous record using the stable file-local cell identity.
+    if let Some(cell_index) = cell_index {
+        records.retain(|_, record| {
+            !(record.source_path.as_deref() == source_path.as_deref()
+                && record.cell_index == Some(cell_index))
+        });
+    }
+    records.insert(
+        label,
+        ExecutionRecord {
+            id,
+            code,
+            source_path,
+            anchor_line,
+            cell_index,
+            status: "running",
+            output: String::new(),
+            elapsed_ms: None,
+        },
+    );
     id
 }
 
