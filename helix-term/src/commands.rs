@@ -8609,7 +8609,6 @@ fn show_python_output(
     editor: &mut Editor,
     project: &std::path::Path,
     source_view_id: ViewId,
-    label: String,
     output: String,
 ) {
     let id = match python::output_buffer(project) {
@@ -8634,7 +8633,6 @@ fn show_python_output(
     let doc = doc_mut!(editor, &id);
     let view = view_mut!(editor);
     doc.ensure_view_init(view.id);
-    let output = python::update_output(project, label, output);
     let transaction = Transaction::change(
         doc.text(),
         [(0, doc.text().len_chars(), Some(output.into()))].into_iter(),
@@ -8738,6 +8736,8 @@ fn run_python_async(
     code: String,
     label: String,
 ) {
+    let execution_id = python::begin_execution(&project, label.clone(), code.clone());
+    let started = std::time::Instant::now();
     python::begin_task(label.clone());
     cx.editor
         .set_status(format!("Python: running ({} task)", python::active_tasks()));
@@ -8746,23 +8746,51 @@ fn run_python_async(
         let result = tokio::task::spawn_blocking(move || python::execute(&worker_project, &code))
             .await
             .map_err(anyhow::Error::from);
+        let elapsed_ms = started.elapsed().as_millis();
         let remaining = python::end_task(&label);
-        let result = result?;
-        Ok(Callback::Editor(Box::new(move |editor| match result {
-            Ok(output) => {
-                show_python_output(editor, &project, source_view_id, label.clone(), output);
-                if remaining == 0 {
-                    editor.set_status("Python: all tasks finished");
-                } else {
-                    editor.set_status(format!("Python: {remaining} task(s) remaining"));
-                }
-            }
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => Err(error),
+        };
+        let (rendered, error) = match result {
+            Ok(output) => (
+                python::finish_execution(
+                    &project,
+                    &label,
+                    execution_id,
+                    "completed",
+                    output,
+                    elapsed_ms,
+                ),
+                None,
+            ),
             Err(error) => {
+                let message = error.to_string();
+                (
+                    python::finish_execution(
+                        &project,
+                        &label,
+                        execution_id,
+                        "failed",
+                        message.clone(),
+                        elapsed_ms,
+                    ),
+                    Some(message),
+                )
+            }
+        };
+        Ok(Callback::Editor(Box::new(move |editor| {
+            show_python_output(editor, &project, source_view_id, rendered);
+            if let Some(error) = error {
                 if remaining == 0 {
-                    editor.set_error(format!("{} (Python: all tasks finished)", error));
+                    editor.set_error(format!("{error} (Python: all tasks finished)"));
                 } else {
-                    editor.set_error(error.to_string());
+                    editor.set_error(error);
                 }
+            } else if remaining == 0 {
+                editor.set_status("Python: all tasks finished");
+            } else {
+                editor.set_status(format!("Python: {remaining} task(s) remaining"));
             }
         })))
     });

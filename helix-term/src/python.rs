@@ -50,7 +50,18 @@ static ACTIVE_TASKS: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_LABELS: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(Vec::new()));
 static OUTPUT_BUFFERS: Lazy<Mutex<HashMap<PathBuf, DocumentId>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
-static OUTPUTS: Lazy<Mutex<HashMap<PathBuf, BTreeMap<String, String>>>> =
+static NEXT_EXECUTION_ID: AtomicUsize = AtomicUsize::new(1);
+
+#[derive(Debug, Clone)]
+struct ExecutionRecord {
+    id: usize,
+    code: String,
+    status: &'static str,
+    output: String,
+    elapsed_ms: Option<u128>,
+}
+
+static EXECUTIONS: Lazy<Mutex<HashMap<PathBuf, BTreeMap<String, ExecutionRecord>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 pub fn begin_task(label: String) {
@@ -80,6 +91,64 @@ pub fn active_labels() -> Vec<String> {
         .lock()
         .expect("Python task-label mutex poisoned")
         .clone()
+}
+
+pub fn begin_execution(project: &Path, label: String, code: String) -> usize {
+    let id = NEXT_EXECUTION_ID.fetch_add(1, Ordering::Relaxed);
+    EXECUTIONS
+        .lock()
+        .expect("Python execution mutex poisoned")
+        .entry(project.to_path_buf())
+        .or_default()
+        .insert(
+            label,
+            ExecutionRecord {
+                id,
+                code,
+                status: "running",
+                output: String::new(),
+                elapsed_ms: None,
+            },
+        );
+    id
+}
+
+pub fn finish_execution(
+    project: &Path,
+    label: &str,
+    id: usize,
+    status: &'static str,
+    output: String,
+    elapsed_ms: u128,
+) -> String {
+    let mut executions = EXECUTIONS.lock().expect("Python execution mutex poisoned");
+    let records = executions.entry(project.to_path_buf()).or_default();
+    if let Some(record) = records.get_mut(label) {
+        if record.id == id {
+            record.status = status;
+            record.output = output;
+            record.elapsed_ms = Some(elapsed_ms);
+        }
+    }
+
+    let mut rendered = format!("Python output: {}\n\n", project.display());
+    for (label, record) in records.iter() {
+        let timing = record
+            .elapsed_ms
+            .map_or_else(String::new, |ms| format!(", {ms}ms"));
+        rendered.push_str(&format!(
+            "── {label} [{}{}, {} chars] ──\n",
+            record.status,
+            timing,
+            record.code.len()
+        ));
+        rendered.push_str(&record.output);
+        if !record.output.ends_with('\n') {
+            rendered.push('\n');
+        }
+        rendered.push('\n');
+    }
+    rendered
 }
 
 /// Execute code in the persistent IPython session for `project`.
@@ -234,27 +303,6 @@ pub fn set_output_buffer(project: &Path, id: DocumentId) {
         .lock()
         .expect("Python output mutex poisoned")
         .insert(project.to_path_buf(), id);
-}
-
-/// Replace the latest output associated with `label` and render all outputs
-/// for this project as a notebook-style inspection buffer.
-pub fn update_output(project: &Path, label: String, output: String) -> String {
-    let mut outputs = OUTPUTS.lock().expect("Python output mutex poisoned");
-    outputs
-        .entry(project.to_path_buf())
-        .or_default()
-        .insert(label, output);
-
-    let mut rendered = format!("Python output: {}\n\n", project.display());
-    for (label, output) in outputs.get(project).expect("output was just inserted") {
-        rendered.push_str(&format!("── {label} ──\n"));
-        rendered.push_str(output);
-        if !output.ends_with('\n') {
-            rendered.push('\n');
-        }
-        rendered.push('\n');
-    }
-    rendered
 }
 
 fn spawn_session(project: &Path) -> anyhow::Result<Session> {
