@@ -114,6 +114,12 @@ Be careful though, as hard resetting might lose you features you like, that I en
     - Other commands to manage sessions are also added:
         - `python_sessions`
         - `python_stop_all_sesions`
+    - Add python interuption command: `python_interrupt`
+    - Add inline output UI that has unique ID for each output:
+        - Each run selection or cell has a unique ID: line number, executed time, character count
+        - If the output uses the same ID, it replaces the output
+        - Inspect all the outputs in the scratch buffer or call `python_output` command
+
 
 # This fork's changes
 
