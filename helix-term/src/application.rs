@@ -1387,6 +1387,10 @@ impl Application {
         //        errors along the way
         let mut errs = Vec::new();
 
+        // Python sessions are external child processes and must be stopped
+        // explicitly; dropping their handles does not terminate them on Unix.
+        crate::python::stop_all();
+
         if self.editor.config().session.restore_cursor {
             let doc_ids: Vec<_> = self.editor.documents().map(|d| d.id()).collect();
             for doc_id in doc_ids {

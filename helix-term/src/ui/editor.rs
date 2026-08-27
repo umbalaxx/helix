@@ -101,8 +101,21 @@ impl EditorView {
 
         let view_offset = doc.view_offset(view.id);
 
-        let text_annotations = view.text_annotations(doc, Some(theme));
+        let mut text_annotations = view.text_annotations(doc, Some(theme));
         let mut decorations = DecorationManager::default();
+
+        if doc.language_id().as_deref() == Some("python") {
+            if let Some(path) = doc.path() {
+                let outputs =
+                    crate::python::inline_outputs(path, &doc.text().slice(..).to_string());
+                if !outputs.is_empty() {
+                    text_annotations.add_line_annotation(Box::new(
+                        text_decorations::PythonOutput::new(outputs.clone(), theme),
+                    ));
+                    decorations.add_decoration(text_decorations::PythonOutput::new(outputs, theme));
+                }
+            }
+        }
 
         if is_focused && config.cursorline {
             decorations.add_decoration(Self::cursorline(doc, view, theme));

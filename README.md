@@ -107,6 +107,19 @@ Be careful though, as hard resetting might lose you features you like, that I en
     - The `space + g` for file change picker is changed to `space + G`.
     - The experimental debug is changed from `space + G` to `space + X` to avoid conflict with the new
     `space + g`.
+- Add interactive Python running in a scratch buffer in a horizontal split:
+    - "C-e" = "python_run_selection"
+    - "C-r" = "python_run_current_cell"
+    - The IPython session is automatically run and project's `uv` is automatically detected.
+    - Other commands to manage sessions are also added:
+        - `python_sessions`
+        - `python_stop_all_sesions`
+    - Add python interuption command: `python_interrupt`
+    - Add inline output UI that has unique ID for each output:
+        - Each run selection or cell has a unique ID: line number, executed time, character count
+        - If the output uses the same ID, it replaces the output
+        - Inspect all the outputs in the scratch buffer or call `python_output` command
+
 
 # This fork's changes
 
