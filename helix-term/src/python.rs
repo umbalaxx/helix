@@ -221,6 +221,20 @@ pub fn sessions() -> Vec<PathBuf> {
 }
 
 pub fn stop_all() {
+    #[cfg(unix)]
+    for pid in SESSION_PIDS
+        .lock()
+        .expect("Python pid mutex poisoned")
+        .values()
+        .copied()
+        .collect::<Vec<_>>()
+    {
+        // Signal first, before trying to lock individual sessions. A session
+        // may currently be blocked reading Python output.
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
+    }
     let sessions = SESSIONS
         .lock()
         .expect("python session mutex poisoned")
