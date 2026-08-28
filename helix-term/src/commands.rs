@@ -4253,6 +4253,10 @@ pub(crate) fn oil_editor(editor: &mut Editor) {
         .and_then(|path| path.parent().map(Path::to_path_buf))
         .unwrap_or_else(helix_stdx::env::current_working_dir);
 
+    oil_open_directory(editor, directory);
+}
+
+fn oil_open_directory(editor: &mut Editor, directory: PathBuf) {
     let (content, entries) = match oil_listing(&directory) {
         Ok(content) => content,
         Err(error) => {
@@ -4270,6 +4274,124 @@ pub(crate) fn oil_editor(editor: &mut Editor) {
     let doc_id = editor.new_file_from_document(Action::Replace, document);
     install_oil_state(editor, doc_id, directory.clone(), entries);
     editor.set_status(format!("oil: {}", directory.display()));
+}
+
+pub(crate) fn oil_save(editor: &mut Editor) {
+    let doc_id = view!(editor).doc;
+    let Some(state) = editor
+        .documents
+        .get(&doc_id)
+        .and_then(|doc| doc.oil_state.clone())
+    else {
+        editor.set_error("not an oil buffer");
+        return;
+    };
+    let current = state.lines.iter().flatten().cloned().collect::<Vec<_>>();
+    let current_ids = current
+        .iter()
+        .map(|entry| entry.id)
+        .collect::<std::collections::HashSet<_>>();
+    let mut operations = Vec::new();
+    for entry in &state.original_entries {
+        if !current_ids.contains(&entry.id) {
+            operations.push((entry.original_path.clone(), None, entry.is_directory));
+        }
+    }
+    for entry in &current {
+        let destination = state.directory.join(&entry.name);
+        if entry.is_new {
+            operations.push((destination.clone(), Some(destination), entry.is_directory));
+        } else if entry.original_path != destination {
+            operations.push((
+                entry.original_path.clone(),
+                Some(destination),
+                entry.is_directory,
+            ));
+        }
+    }
+
+    for (source, destination, _) in &operations {
+        if let Some(destination) = destination {
+            if source != destination && destination.exists() {
+                editor.set_error(format!(
+                    "oil: destination already exists: {}",
+                    destination.display()
+                ));
+                return;
+            }
+        }
+    }
+    for (source, destination, is_directory) in operations {
+        let result = match destination {
+            None => {
+                if is_directory {
+                    fs::remove_dir_all(&source)
+                } else {
+                    fs::remove_file(&source)
+                }
+            }
+            Some(destination) if source == destination => {
+                if is_directory {
+                    fs::create_dir(&destination)
+                } else {
+                    fs::File::create(&destination).map(|_| ())
+                }
+            }
+            Some(destination) => fs::rename(&source, &destination),
+        };
+        if let Err(error) = result {
+            editor.set_error(format!(
+                "oil: failed to apply '{}': {error}",
+                source.display()
+            ));
+            return;
+        }
+    }
+    oil_reload_document(editor, doc_id, state.directory);
+}
+
+pub(crate) fn oil_refresh(editor: &mut Editor) {
+    let doc_id = view!(editor).doc;
+    let Some(directory) = editor
+        .documents
+        .get(&doc_id)
+        .and_then(|doc| doc.oil_state.as_ref())
+        .map(|state| state.directory.clone())
+    else {
+        editor.set_error("not an oil buffer");
+        return;
+    };
+    oil_reload_document(editor, doc_id, directory);
+}
+
+fn oil_reload_document(editor: &mut Editor, doc_id: DocumentId, directory: PathBuf) {
+    let (content, entries) = match oil_listing(&directory) {
+        Ok(result) => result,
+        Err(error) => {
+            editor.set_error(error);
+            return;
+        }
+    };
+    let Some(view_id) = editor
+        .tree
+        .views()
+        .find(|(view, _)| view.doc == doc_id)
+        .map(|(view, _)| view.id)
+    else {
+        editor.set_error("oil: current buffer view no longer exists");
+        return;
+    };
+    let Some(doc) = editor.documents.get_mut(&doc_id) else {
+        editor.set_error("oil: current buffer no longer exists");
+        return;
+    };
+    let transaction = Transaction::change(
+        doc.text(),
+        std::iter::once((0, doc.text().len_chars(), Some(content.into()))),
+    );
+    doc.apply(&transaction, view_id);
+    install_oil_state(editor, doc_id, directory.clone(), entries);
+    editor.set_status(format!("oil: refreshed {}", directory.display()));
 }
 
 fn oil_listing(directory: &Path) -> Result<(String, Vec<(String, bool)>), String> {
@@ -4334,6 +4456,7 @@ fn install_oil_state(
             is_directory,
             original_path: path,
             copied_from: None,
+            is_new: false,
         });
     }
     if let Some(doc) = editor.documents.get_mut(&doc_id) {
@@ -4341,10 +4464,11 @@ fn install_oil_state(
         if directory.parent().is_some() {
             lines.push(None);
         }
-        lines.extend(state_entries.into_iter().map(Some));
+        lines.extend(state_entries.iter().cloned().map(Some));
         doc.oil_state = Some(OilBufferState {
             directory,
             lines,
+            original_entries: state_entries,
             next_id: editor.next_oil_entry_id,
         });
     }
@@ -4487,6 +4611,7 @@ pub(crate) fn sync_oil_state(doc: &mut Document, old_text: &Rope) {
                 is_directory,
                 original_path: state.directory.join(name),
                 copied_from: None,
+                is_new: true,
             }
         };
         reconciled.push(Some(entry));

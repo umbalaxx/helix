@@ -68,12 +68,14 @@ pub struct OilEntryState {
     pub is_directory: bool,
     pub original_path: PathBuf,
     pub copied_from: Option<u64>,
+    pub is_new: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct OilBufferState {
     pub directory: PathBuf,
     pub lines: Vec<Option<OilEntryState>>,
+    pub original_entries: Vec<OilEntryState>,
     pub next_id: u64,
 }
 

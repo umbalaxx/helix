@@ -777,6 +777,28 @@ fn oil_cut_command(
     Ok(())
 }
 
+fn oil_save_command(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        super::oil_save(cx.editor);
+    }
+    Ok(())
+}
+
+fn oil_refresh_command(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        super::oil_refresh(cx.editor);
+    }
+    Ok(())
+}
+
 fn format(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -3531,6 +3553,22 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Cut the current oil entry for explicit oil paste.",
         fun: oil_cut_command,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "oil-save",
+        aliases: &[],
+        doc: "Apply oil buffer changes to the filesystem.",
+        fun: oil_save_command,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "oil-refresh",
+        aliases: &[],
+        doc: "Discard oil buffer changes and reload the directory.",
+        fun: oil_refresh_command,
         completer: CommandCompleter::none(),
         signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
     },
