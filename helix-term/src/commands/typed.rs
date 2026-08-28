@@ -744,6 +744,17 @@ fn new_file(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> an
     Ok(())
 }
 
+fn oil_command(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        super::oil_editor(cx.editor);
+    }
+    Ok(())
+}
+
 fn format(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -3468,6 +3479,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &["n"],
         doc: "Create a new scratch buffer.",
         fun: new_file,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "oil",
+        aliases: &[],
+        doc: "Open the oil file explorer buffer.",
+        fun: oil_command,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

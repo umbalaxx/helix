@@ -87,6 +87,7 @@ use std::{
     error::Error,
     fmt,
     future::Future,
+    fs,
     io::Read,
     num::NonZeroUsize,
     ops::Not,
@@ -443,6 +444,8 @@ impl MappableCommand {
         file_explorer, "Open file explorer in workspace root",
         file_explorer_in_current_buffer_directory, "Open file explorer at current buffer's directory",
         file_explorer_in_current_directory, "Open file explorer at current working directory",
+        oil, "Open the oil file explorer buffer",
+        oil_enter, "Enter the oil entry under the cursor",
         code_action, "Perform code action",
         buffer_picker, "Open buffer picker",
         jumplist_picker, "Open jumplist picker",
@@ -4090,6 +4093,119 @@ fn file_explorer_in_current_directory(cx: &mut Context) {
 
     if let Ok(picker) = ui::file_explorer(cwd, cx.editor) {
         cx.push_layer(Box::new(overlaid(picker)));
+    }
+}
+
+/// Open a directory as an oil-style buffer.
+pub(crate) fn oil(cx: &mut Context) {
+    oil_editor(cx.editor);
+}
+
+pub(crate) fn oil_editor(editor: &mut Editor) {
+    let directory = doc!(editor)
+        .path()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(helix_stdx::env::current_working_dir);
+
+    let content = match oil_listing(&directory) {
+        Ok(content) => content,
+        Err(error) => {
+            editor.set_error(error);
+            return;
+        }
+    };
+
+    let document = Document::from(
+        Rope::from(content),
+        None,
+        editor.config.clone(),
+        editor.syn_loader.clone(),
+    );
+    editor.new_file_from_document(Action::Replace, document);
+    editor.set_status(format!("oil: {}", directory.display()));
+}
+
+fn oil_listing(directory: &Path) -> Result<String, String> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) => return Err(format!("unable to read '{}': {error}", directory.display())),
+    };
+
+    let mut entries = entries
+        .filter_map(Result::ok)
+        .map(|entry| {
+            let path = entry.path();
+            (path.is_dir(), entry.file_name().to_string_lossy().into_owned())
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|(left_dir, left), (right_dir, right)| {
+        right_dir.cmp(left_dir).then_with(|| left.cmp(right))
+    });
+
+    let mut content = format!("Oil: {}\n", directory.display());
+    if directory.parent().is_some() {
+        content.push_str("../\n");
+    }
+    for (is_directory, name) in entries {
+        content.push_str(&name);
+        if is_directory {
+            content.push('/');
+        }
+        content.push('\n');
+    }
+
+    Ok(content)
+}
+
+/// Enter the directory or file represented by the current oil line.
+pub(crate) fn oil_enter(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let lines = text.lines().map(|line| line.to_string()).collect::<Vec<_>>();
+    let line_number = text.char_to_line(doc.selection(view.id).primary().cursor(text));
+
+    let Some(header) = lines.first() else { return };
+    let Some(directory) = header.strip_prefix("Oil: ").map(str::trim) else {
+        return;
+    };
+    if line_number == 0 {
+        return;
+    }
+    let Some(entry) = lines.get(line_number).map(|line| line.trim()) else {
+        return;
+    };
+    if entry.is_empty() || entry == "../" && directory == "/" {
+        return;
+    }
+
+    let current_directory = PathBuf::from(directory);
+    let target = if entry == "../" {
+        current_directory.parent().map(Path::to_path_buf)
+    } else {
+        Some(current_directory.join(entry.trim_end_matches('/')))
+    };
+    let Some(target) = target else { return };
+
+    if target.is_dir() {
+        let content = match oil_listing(&target) {
+            Ok(content) => content,
+            Err(error) => {
+                cx.editor.set_error(error);
+                return;
+            }
+        };
+        let view_id = view.id;
+        let doc_id = doc.id();
+        let doc = cx.editor.documents.get_mut(&doc_id).expect("current document");
+        let transaction = Transaction::change(doc.text(), std::iter::once((
+            0,
+            doc.text().len_chars(),
+            Some(content.into()),
+        )));
+        doc.apply(&transaction, view_id);
+        cx.editor.set_status(format!("oil: {}", target.display()));
+    } else if let Err(error) = cx.editor.open(&target, Action::Replace) {
+        cx.editor.set_error(format!("unable to open '{}': {error}", target.display()));
     }
 }
 
