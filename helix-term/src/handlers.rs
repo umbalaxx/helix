@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use diagnostics::PullAllDocumentsDiagnosticHandler;
-use helix_event::AsyncHook;
+use helix_event::{register_hook, AsyncHook};
 
 use crate::config::Config;
 use crate::events;
@@ -10,6 +10,7 @@ use crate::handlers::auto_save::AutoSaveHandler;
 use crate::handlers::diagnostics::PullDiagnosticsHandler;
 use crate::handlers::signature_help::SignatureHelpHandler;
 
+use helix_view::events::DocumentDidChange;
 pub use helix_view::handlers::{word_index, Handlers};
 
 use self::document_colors::DocumentColorsHandler;
@@ -53,6 +54,10 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     };
 
     helix_view::handlers::register_hooks(&handlers);
+    register_hook!(move |event: &mut DocumentDidChange<'_>| {
+        crate::commands::sync_oil_state(event.doc, event.old_text);
+        Ok(())
+    });
     completion::register_hooks(&handlers);
     signature_help::register_hooks(&handlers);
     document_highlight::register_hooks(&handlers);

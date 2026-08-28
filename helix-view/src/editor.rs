@@ -2,7 +2,8 @@ use crate::{
     annotations::diagnostics::{DiagnosticFilter, InlineDiagnosticsConfig},
     clipboard::ClipboardProvider,
     document::{
-        DocumentOpenError, DocumentSavedEventFuture, DocumentSavedEventResult, Mode, SavePoint,
+        DocumentOpenError, DocumentSavedEventFuture, DocumentSavedEventResult, Mode, OilClipboard,
+        SavePoint,
     },
     events::{DocumentDidClose, DocumentDidOpen, DocumentFocusLost},
     graphics::{CursorKind, Rect},
@@ -1465,6 +1466,9 @@ pub struct Editor {
     pub tree: Tree,
     pub next_document_id: DocumentId,
     pub documents: BTreeMap<DocumentId, Document>,
+    pub oil_entry_ids: HashMap<PathBuf, u64>,
+    pub next_oil_entry_id: u64,
+    pub oil_clipboard: Option<OilClipboard>,
 
     // We Flatten<> to resolve the inner DocumentSavedEventFuture. For that we need a stream of streams, hence the Once<>.
     // https://stackoverflow.com/a/66875668
@@ -1620,6 +1624,9 @@ impl Editor {
             tree: Tree::new(area),
             next_document_id: DocumentId::default(),
             documents: BTreeMap::new(),
+            oil_entry_ids: HashMap::new(),
+            next_oil_entry_id: 1,
+            oil_clipboard: None,
             saves: HashMap::new(),
             save_queue: SelectAll::new(),
             write_count: 0,

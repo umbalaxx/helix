@@ -755,6 +755,28 @@ fn oil_command(
     Ok(())
 }
 
+fn oil_yank_command(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        super::oil_yank(cx.editor);
+    }
+    Ok(())
+}
+
+fn oil_cut_command(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        super::oil_cut(cx.editor);
+    }
+    Ok(())
+}
+
 fn format(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -3495,6 +3517,22 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
             positionals: (0, Some(0)),
             ..Signature::DEFAULT
         },
+    },
+    TypableCommand {
+        name: "oil-yank",
+        aliases: &[],
+        doc: "Yank the current oil entry for explicit oil paste.",
+        fun: oil_yank_command,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "oil-cut",
+        aliases: &[],
+        doc: "Cut the current oil entry for explicit oil paste.",
+        fun: oil_cut_command,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
     },
     TypableCommand {
         name: "format",

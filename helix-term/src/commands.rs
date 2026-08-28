@@ -56,7 +56,10 @@ use helix_core::{
     Selection, SmallVec, Syntax, Tendril, Transaction,
 };
 use helix_view::{
-    document::{FormatterError, Mode, SearchMatch, SearchMatchLimit, SCRATCH_BUFFER_NAME},
+    document::{
+        FormatterError, Mode, OilBufferState, OilClipboard, OilEntryState, SearchMatch,
+        SearchMatchLimit, SCRATCH_BUFFER_NAME,
+    },
     editor::{Action, CompleteAction, Motion, OptionToml, SearchConfig},
     expansion,
     info::Info,
@@ -4250,7 +4253,7 @@ pub(crate) fn oil_editor(editor: &mut Editor) {
         .and_then(|path| path.parent().map(Path::to_path_buf))
         .unwrap_or_else(helix_stdx::env::current_working_dir);
 
-    let content = match oil_listing(&directory) {
+    let (content, entries) = match oil_listing(&directory) {
         Ok(content) => content,
         Err(error) => {
             editor.set_error(error);
@@ -4264,11 +4267,12 @@ pub(crate) fn oil_editor(editor: &mut Editor) {
         editor.config.clone(),
         editor.syn_loader.clone(),
     );
-    editor.new_file_from_document(Action::Replace, document);
+    let doc_id = editor.new_file_from_document(Action::Replace, document);
+    install_oil_state(editor, doc_id, directory.clone(), entries);
     editor.set_status(format!("oil: {}", directory.display()));
 }
 
-fn oil_listing(directory: &Path) -> Result<String, String> {
+fn oil_listing(directory: &Path) -> Result<(String, Vec<(String, bool)>), String> {
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) => return Err(format!("unable to read '{}': {error}", directory.display())),
@@ -4292,20 +4296,64 @@ fn oil_listing(directory: &Path) -> Result<String, String> {
     if directory.parent().is_some() {
         content.push_str("../\n");
     }
-    for (is_directory, name) in entries {
-        content.push_str(&name);
-        if is_directory {
+    for (is_directory, name) in &entries {
+        content.push_str(name);
+        if *is_directory {
             content.push('/');
         }
         content.push('\n');
     }
 
-    Ok(content)
+    let state_entries = entries
+        .iter()
+        .map(|(is_directory, name)| (name.clone(), *is_directory))
+        .collect();
+    Ok((content, state_entries))
+}
+
+fn install_oil_state(
+    editor: &mut Editor,
+    doc_id: DocumentId,
+    directory: PathBuf,
+    entries: Vec<(String, bool)>,
+) {
+    let mut state_entries = Vec::with_capacity(entries.len());
+    for (name, is_directory) in entries {
+        let path = directory.join(&name);
+        let id = if let Some(id) = editor.oil_entry_ids.get(&path) {
+            *id
+        } else {
+            let id = editor.next_oil_entry_id;
+            editor.next_oil_entry_id += 1;
+            editor.oil_entry_ids.insert(path.clone(), id);
+            id
+        };
+        state_entries.push(OilEntryState {
+            id,
+            name,
+            is_directory,
+            original_path: path,
+            copied_from: None,
+        });
+    }
+    if let Some(doc) = editor.documents.get_mut(&doc_id) {
+        let mut lines = vec![None];
+        if directory.parent().is_some() {
+            lines.push(None);
+        }
+        lines.extend(state_entries.into_iter().map(Some));
+        doc.oil_state = Some(OilBufferState {
+            directory,
+            lines,
+            next_id: editor.next_oil_entry_id,
+        });
+    }
 }
 
 /// Enter the directory or file represented by the current oil line.
 pub(crate) fn oil_enter(cx: &mut Context) {
     let (view, doc) = current!(cx.editor);
+    let oil_is_dirty = doc.is_modified();
     let text = doc.text().slice(..);
     let lines = text
         .lines()
@@ -4336,7 +4384,13 @@ pub(crate) fn oil_enter(cx: &mut Context) {
     let Some(target) = target else { return };
 
     if target.is_dir() {
-        let content = match oil_listing(&target) {
+        if oil_is_dirty {
+            cx.editor.set_error(
+                "oil: buffer has pending changes; apply them or refresh before navigating",
+            );
+            return;
+        }
+        let (content, entries) = match oil_listing(&target) {
             Ok(content) => content,
             Err(error) => {
                 cx.editor.set_error(error);
@@ -4355,11 +4409,126 @@ pub(crate) fn oil_enter(cx: &mut Context) {
             std::iter::once((0, doc.text().len_chars(), Some(content.into()))),
         );
         doc.apply(&transaction, view_id);
+        install_oil_state(cx.editor, doc_id, target.clone(), entries);
         cx.editor.set_status(format!("oil: {}", target.display()));
+    } else if oil_is_dirty {
+        cx.editor.set_error(
+            "oil: buffer has pending changes; apply them or refresh before opening a file",
+        );
     } else if let Err(error) = cx.editor.open(&target, Action::Replace) {
         cx.editor
             .set_error(format!("unable to open '{}': {error}", target.display()));
     }
+}
+
+/// Reconcile hidden entry metadata after an oil buffer edit. Unchanged lines
+/// match by content first, preserving IDs when they move; changed lines at
+/// their old position retain their ID as renames.
+pub(crate) fn sync_oil_state(doc: &mut Document, old_text: &Rope) {
+    let Some(mut state) = doc.oil_state.take() else {
+        return;
+    };
+    let old_lines = old_text
+        .slice(..)
+        .lines()
+        .map(|line| line.to_string().trim().to_owned())
+        .collect::<Vec<_>>();
+    let new_lines = doc
+        .text()
+        .slice(..)
+        .lines()
+        .map(|line| line.to_string().trim().to_owned())
+        .collect::<Vec<_>>();
+    let mut used = std::collections::HashSet::new();
+    let mut reconciled = Vec::with_capacity(new_lines.len());
+
+    for (index, line) in new_lines.iter().enumerate() {
+        if index == 0 || line == "../" || line.is_empty() {
+            reconciled.push(None);
+            continue;
+        }
+        let is_directory = line.ends_with('/');
+        let name = line.trim_end_matches('/');
+        let candidate = state
+            .lines
+            .iter()
+            .enumerate()
+            .find(|(old_index, old)| {
+                !used.contains(old_index)
+                    && old.as_ref().is_some_and(|entry| {
+                        entry.name == name && entry.is_directory == is_directory
+                    })
+            })
+            .map(|(old_index, _)| old_index)
+            .or_else(|| {
+                state.lines.get(index).and_then(|old| {
+                    old.as_ref()
+                        .filter(|_| {
+                            !used.contains(&index)
+                                && old_lines.get(index).is_some_and(|line| {
+                                    !line.is_empty() && line != "../" && !line.starts_with("Oil: ")
+                                })
+                        })
+                        .map(|_| index)
+                })
+            });
+        let entry = if let Some(old_index) = candidate {
+            used.insert(old_index);
+            let mut entry = state.lines[old_index].clone().expect("oil entry");
+            entry.name = name.to_owned();
+            entry.is_directory = is_directory;
+            entry
+        } else {
+            let id = state.next_id;
+            state.next_id += 1;
+            OilEntryState {
+                id,
+                name: name.to_owned(),
+                is_directory,
+                original_path: state.directory.join(name),
+                copied_from: None,
+            }
+        };
+        reconciled.push(Some(entry));
+    }
+    state.lines = reconciled;
+    doc.oil_state = Some(state);
+}
+
+fn oil_clipboard_command(editor: &mut Editor, cut: bool) {
+    let (view, doc) = current!(editor);
+    let Some(state) = doc.oil_state.as_ref() else {
+        editor.set_error("not an oil buffer");
+        return;
+    };
+    let text = doc.text().slice(..);
+    let line = text.char_to_line(doc.selection(view.id).primary().cursor(text));
+    let Some(Some(entry)) = state.lines.get(line) else {
+        editor.set_error("no oil entry under cursor");
+        return;
+    };
+    let path = entry.original_path.clone();
+    let source_id = entry.id;
+    let name = entry.name.clone();
+    editor.oil_clipboard = Some(OilClipboard {
+        paths: vec![path],
+        source_ids: vec![source_id],
+        cut,
+    });
+    editor.set_status(format!(
+        "oil: {} {} (id {})",
+        if cut { "cut" } else { "yanked" },
+        name,
+        source_id
+    ));
+}
+
+pub(crate) fn oil_yank(editor: &mut Editor) {
+    oil_clipboard_command(editor, false);
+}
+
+pub(crate) fn oil_cut(editor: &mut Editor) {
+    oil_clipboard_command(editor, true);
 }
 
 struct PathStyleConfig {

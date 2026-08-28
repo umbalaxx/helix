@@ -61,6 +61,29 @@ pub const DEFAULT_LANGUAGE_NAME: &str = "text";
 
 pub const SCRATCH_BUFFER_NAME: &str = "[scratch]";
 
+#[derive(Debug, Clone)]
+pub struct OilEntryState {
+    pub id: u64,
+    pub name: String,
+    pub is_directory: bool,
+    pub original_path: PathBuf,
+    pub copied_from: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OilBufferState {
+    pub directory: PathBuf,
+    pub lines: Vec<Option<OilEntryState>>,
+    pub next_id: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct OilClipboard {
+    pub paths: Vec<PathBuf>,
+    pub source_ids: Vec<u64>,
+    pub cut: bool,
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Mode {
     Normal = 0,
@@ -162,6 +185,7 @@ pub struct Document {
     last_search_match: HashMap<ViewId, SearchMatch>,
     pub marks: HashSet<Range>,
     pub last_insert_location: Option<Selection>,
+    pub oil_state: Option<OilBufferState>,
 
     /// Inlay hints annotations for the document, by view.
     ///
@@ -759,6 +783,7 @@ impl Document {
             active_snippet: None,
             marks: Default::default(),
             last_insert_location: None,
+            oil_state: None,
             path: None,
             relative_path: OnceCell::new(),
             workspace_root: OnceCell::new(),
