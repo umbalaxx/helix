@@ -4390,8 +4390,22 @@ fn oil_reload_document(editor: &mut Editor, doc_id: DocumentId, directory: PathB
         std::iter::once((0, doc.text().len_chars(), Some(content.into()))),
     );
     doc.apply(&transaction, view_id);
+    doc.set_selection(view_id, Selection::point(0));
+    let view = editor.tree.get_mut(view_id);
+    doc.append_changes_to_history(view);
+    doc.reset_modified();
     install_oil_state(editor, doc_id, directory.clone(), entries);
     editor.set_status(format!("oil: refreshed {}", directory.display()));
+}
+
+fn oil_buffer_differs_from_disk(doc: &Document) -> bool {
+    let Some(state) = doc.oil_state.as_ref() else {
+        return false;
+    };
+    let Ok((content, _)) = oil_listing(&state.directory) else {
+        return true;
+    };
+    doc.text().to_string() != content
 }
 
 fn oil_listing(directory: &Path) -> Result<(String, Vec<(String, bool)>), String> {
@@ -4477,7 +4491,7 @@ fn install_oil_state(
 /// Enter the directory or file represented by the current oil line.
 pub(crate) fn oil_enter(cx: &mut Context) {
     let (view, doc) = current!(cx.editor);
-    let oil_is_dirty = doc.is_modified();
+    let oil_is_dirty = oil_buffer_differs_from_disk(doc);
     let text = doc.text().slice(..);
     let lines = text
         .lines()
