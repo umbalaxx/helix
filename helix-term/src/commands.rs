@@ -4721,6 +4721,89 @@ pub(crate) fn oil_cut(editor: &mut Editor) {
     oil_clipboard_command(editor, true);
 }
 
+pub(crate) fn oil_paste(editor: &mut Editor) {
+    let doc_id = view!(editor).doc;
+    let Some(directory) = editor
+        .documents
+        .get(&doc_id)
+        .and_then(|doc| doc.oil_state.as_ref())
+        .map(|state| state.directory.clone())
+    else {
+        editor.set_error("not an oil buffer");
+        return;
+    };
+    if editor
+        .documents
+        .get(&doc_id)
+        .is_some_and(oil_buffer_differs_from_disk)
+    {
+        editor.set_error("oil: apply or refresh pending changes before pasting");
+        return;
+    }
+    let Some(clipboard) = editor.oil_clipboard.clone() else {
+        editor.set_error("oil: clipboard is empty");
+        return;
+    };
+
+    let mut destinations = Vec::with_capacity(clipboard.paths.len());
+    for source in &clipboard.paths {
+        let Some(name) = source.file_name() else {
+            editor.set_error("oil: clipboard entry has no file name");
+            return;
+        };
+        let destination = directory.join(name);
+        if source == &destination {
+            editor.set_error("oil: source and destination are the same");
+            return;
+        }
+        if destination.exists() {
+            editor.set_error(format!(
+                "oil: destination already exists: {}",
+                destination.display()
+            ));
+            return;
+        }
+        destinations.push((source.clone(), destination));
+    }
+
+    for (source, destination) in destinations {
+        let result = if clipboard.cut {
+            fs::rename(&source, &destination)
+        } else if source.is_dir() {
+            oil_copy_directory(&source, &destination)
+        } else {
+            fs::copy(&source, &destination).map(|_| ())
+        };
+        if let Err(error) = result {
+            editor.set_error(format!(
+                "oil: failed to {} '{}': {error}",
+                if clipboard.cut { "move" } else { "copy" },
+                source.display()
+            ));
+            return;
+        }
+    }
+    if clipboard.cut {
+        editor.oil_clipboard = None;
+    }
+    oil_reload_document(editor, doc_id, directory);
+}
+
+fn oil_copy_directory(source: &Path, destination: &Path) -> Result<(), std::io::Error> {
+    fs::create_dir(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        if source_path.is_dir() {
+            oil_copy_directory(&source_path, &destination_path)?;
+        } else {
+            fs::copy(source_path, destination_path)?;
+        }
+    }
+    Ok(())
+}
+
 struct PathStyleConfig {
     directory_style: Style,
     number_style: Style,

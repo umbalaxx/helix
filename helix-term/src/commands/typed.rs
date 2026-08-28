@@ -777,6 +777,17 @@ fn oil_cut_command(
     Ok(())
 }
 
+fn oil_paste_command(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        super::oil_paste(cx.editor);
+    }
+    Ok(())
+}
+
 fn oil_save_command(
     cx: &mut compositor::Context,
     _args: Args,
@@ -3553,6 +3564,14 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Cut the current oil entry for explicit oil paste.",
         fun: oil_cut_command,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "oil-paste",
+        aliases: &[],
+        doc: "Paste the explicit oil clipboard into the current directory.",
+        fun: oil_paste_command,
         completer: CommandCompleter::none(),
         signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
     },
