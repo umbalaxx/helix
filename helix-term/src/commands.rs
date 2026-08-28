@@ -2077,6 +2077,10 @@ fn oil_entry_range(view: &View, doc: &Document) -> Option<Range> {
     let text = doc.text().slice(..);
     let cursor = doc.selection(view.id).primary().cursor(text);
     let line = text.char_to_line(cursor);
+    oil_entry_range_at_line(text, line)
+}
+
+fn oil_entry_range_at_line(text: RopeSlice, line: usize) -> Option<Range> {
     if line == 0 {
         return None;
     }
@@ -2093,20 +2097,40 @@ fn oil_entry_range(view: &View, doc: &Document) -> Option<Range> {
 }
 
 fn oil_restricted_selection(view: &View, doc: &Document) -> Option<Selection> {
-    let allowed = oil_entry_range(view, doc)?;
     let text = doc.text().slice(..);
     let selection = doc.selection(view.id).clone();
+    let mut ranges = SmallVec::new();
 
-    Some(selection.transform(|range| {
-        let from = range.from().max(allowed.from());
-        let to = range.to().min(allowed.to());
-        if from <= to {
-            Range::new(from, to).with_direction(range.direction())
+    for range in selection.ranges() {
+        let (start_line, end_line) = range.line_range(text);
+        let line_start = text.line_to_char(start_line);
+        let line_end = text.line_to_char((end_line + 1).min(text.len_lines()));
+        let is_linewise = range.from() == line_start && range.to() == line_end;
+
+        if is_linewise {
+            for line in start_line..=end_line {
+                let Some(allowed) = oil_entry_range_at_line(text, line) else {
+                    return None;
+                };
+                ranges.push(allowed);
+            }
         } else {
-            let cursor = range.cursor(text).clamp(allowed.from(), allowed.to());
-            Range::point(cursor)
+            let Some(allowed) =
+                oil_entry_range_at_line(text, text.char_to_line(range.cursor(text)))
+            else {
+                return None;
+            };
+            let from = range.from().max(allowed.from());
+            let to = range.to().min(allowed.to());
+            ranges.push(if from <= to {
+                Range::new(from, to).with_direction(range.direction())
+            } else {
+                Range::point(range.cursor(text).clamp(allowed.from(), allowed.to()))
+            });
         }
-    }))
+    }
+
+    Some(Selection::new(ranges, selection.primary_index()))
 }
 
 fn oil_prepare_insert_deletion(cx: &mut Context, forward: bool) -> bool {
@@ -4310,6 +4334,15 @@ pub(crate) fn oil_save(editor: &mut Editor) {
         }
     }
 
+    let mut destinations = std::collections::HashSet::new();
+    for entry in &current {
+        let destination = state.directory.join(&entry.name);
+        if !destinations.insert(destination.clone()) {
+            editor.set_error(format!("oil: duplicate entry name: {}", entry.name));
+            return;
+        }
+    }
+
     for (source, destination, _) in &operations {
         if let Some(destination) = destination {
             if source != destination && destination.exists() {
@@ -4599,6 +4632,20 @@ pub(crate) fn sync_oil_state(doc: &mut Document, old_text: &Rope) {
             })
             .map(|(old_index, _)| old_index)
             .or_else(|| {
+                // If this name already existed in the old listing, do not
+                // use the positional rename fallback. A duplicated line
+                // created by normal Helix yank/paste otherwise consumes the
+                // ID of the entry that happened to follow it (for example,
+                // copying `__pycache__/` can turn `__init__.py` into a
+                // phantom rename).
+                let already_existed = state.lines.iter().any(|old| {
+                    old.as_ref().is_some_and(|entry| {
+                        entry.name == name && entry.is_directory == is_directory
+                    })
+                });
+                if already_existed {
+                    return None;
+                }
                 state.lines.get(index).and_then(|old| {
                     old.as_ref()
                         .filter(|_| {
@@ -4642,6 +4689,10 @@ fn oil_clipboard_command(editor: &mut Editor, cut: bool) {
     };
     let text = doc.text().slice(..);
     let line = text.char_to_line(doc.selection(view.id).primary().cursor(text));
+    if line == 0 || text.line(line).to_string().trim() == "../" {
+        editor.set_error("oil: cannot yank or cut the parent-directory entry");
+        return;
+    }
     let Some(Some(entry)) = state.lines.get(line) else {
         editor.set_error("no oil entry under cursor");
         return;
