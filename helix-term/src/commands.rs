@@ -85,9 +85,8 @@ use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
     error::Error,
-    fmt,
+    fmt, fs,
     future::Future,
-    fs,
     io::Read,
     num::NonZeroUsize,
     ops::Not,
@@ -2069,12 +2068,85 @@ fn repeat_last_motion(cx: &mut Context) {
     cx.editor.repeat_last_motion(cx.count())
 }
 
+/// Return the editable filename range for the entry under the primary cursor.
+/// Oil's header, parent entry, and directory marker are structural text.
+fn oil_entry_range(view: &View, doc: &Document) -> Option<Range> {
+    let text = doc.text().slice(..);
+    let cursor = doc.selection(view.id).primary().cursor(text);
+    let line = text.char_to_line(cursor);
+    if line == 0 {
+        return None;
+    }
+
+    let line_text = text.line(line).to_string();
+    let entry = line_text.trim();
+    if entry.is_empty() || entry == "../" {
+        return None;
+    }
+
+    let start = text.line_to_char(line);
+    let end = start + entry.chars().count() - usize::from(entry.ends_with('/'));
+    Some(Range::new(start, end))
+}
+
+fn oil_restricted_selection(view: &View, doc: &Document) -> Option<Selection> {
+    let allowed = oil_entry_range(view, doc)?;
+    let text = doc.text().slice(..);
+    let selection = doc.selection(view.id).clone();
+
+    Some(selection.transform(|range| {
+        let from = range.from().max(allowed.from());
+        let to = range.to().min(allowed.to());
+        if from <= to {
+            Range::new(from, to).with_direction(range.direction())
+        } else {
+            let cursor = range.cursor(text).clamp(allowed.from(), allowed.to());
+            Range::point(cursor)
+        }
+    }))
+}
+
+fn oil_prepare_insert_deletion(cx: &mut Context, forward: bool) -> bool {
+    if !is_oil_buffer(doc!(cx.editor)) {
+        return true;
+    }
+
+    let (view, doc) = current!(cx.editor);
+    let Some(range) = oil_entry_range(view, doc) else {
+        return false;
+    };
+    let cursor = doc
+        .selection(view.id)
+        .primary()
+        .cursor(doc.text().slice(..));
+    if forward && cursor >= range.to() {
+        return false;
+    }
+    let Some(selection) = oil_restricted_selection(view, doc) else {
+        return false;
+    };
+    doc.set_selection(view.id, selection);
+    true
+}
+
+fn is_oil_buffer(doc: &Document) -> bool {
+    doc.text()
+        .slice(..)
+        .line(0)
+        .to_string()
+        .trim()
+        .starts_with("Oil: ")
+}
+
 fn replace(cx: &mut Context) {
     let mut buf = [0u8; 4]; // To hold utf8 encoded char.
 
     // need to wait for next key
     cx.on_next_key(move |cx, event| {
         let (view, doc) = current!(cx.editor);
+        if is_oil_buffer(doc) && oil_entry_range(view, doc).is_none() {
+            return;
+        }
         let ch: Option<&str> = match event {
             KeyEvent {
                 code: KeyCode::Char(ch),
@@ -2090,10 +2162,18 @@ fn replace(cx: &mut Context) {
             _ => None,
         };
 
-        let selection = doc.selection(view.id);
+        let selection = if let Some(range) = oil_entry_range(view, doc) {
+            let cursor = doc
+                .selection(view.id)
+                .primary()
+                .cursor(doc.text().slice(..));
+            Selection::point(cursor.clamp(range.from(), range.to()))
+        } else {
+            doc.selection(view.id).clone()
+        };
 
         if let Some(ch) = ch {
-            let transaction = Transaction::change_by_selection(doc.text(), selection, |range| {
+            let transaction = Transaction::change_by_selection(doc.text(), &selection, |range| {
                 if !range.is_empty() {
                     let text: Tendril = doc
                         .text()
@@ -3868,18 +3948,48 @@ fn delete_by_selection_insert_mode(
 }
 
 fn delete_selection(cx: &mut Context) {
+    let oil = is_oil_buffer(doc!(cx.editor));
+    if oil {
+        let Some(selection) = oil_restricted_selection(view!(cx.editor), doc!(cx.editor)) else {
+            return;
+        };
+        let (view, doc) = current!(cx.editor);
+        doc.set_selection(view.id, selection);
+    }
     delete_selection_impl(cx, Operation::Delete, YankAction::Yank);
 }
 
 fn delete_selection_noyank(cx: &mut Context) {
+    let oil = is_oil_buffer(doc!(cx.editor));
+    if oil {
+        let Some(selection) = oil_restricted_selection(view!(cx.editor), doc!(cx.editor)) else {
+            return;
+        };
+        let (view, doc) = current!(cx.editor);
+        doc.set_selection(view.id, selection);
+    }
     delete_selection_impl(cx, Operation::Delete, YankAction::NoYank);
 }
 
 fn change_selection(cx: &mut Context) {
+    let oil = is_oil_buffer(doc!(cx.editor));
+    if let Some(selection) = oil_restricted_selection(view!(cx.editor), doc!(cx.editor)) {
+        let (view, doc) = current!(cx.editor);
+        doc.set_selection(view.id, selection);
+    } else if oil {
+        return;
+    }
     delete_selection_impl(cx, Operation::Change, YankAction::Yank);
 }
 
 fn change_selection_noyank(cx: &mut Context) {
+    let oil = is_oil_buffer(doc!(cx.editor));
+    if let Some(selection) = oil_restricted_selection(view!(cx.editor), doc!(cx.editor)) {
+        let (view, doc) = current!(cx.editor);
+        doc.set_selection(view.id, selection);
+    } else if oil {
+        return;
+    }
     delete_selection_impl(cx, Operation::Change, YankAction::NoYank);
 }
 
@@ -3924,6 +4034,19 @@ fn insert_mode(cx: &mut Context) {
     enter_insert_mode(cx);
     let (view, doc) = current!(cx.editor);
 
+    if let Some(range) = oil_entry_range(view, doc) {
+        let cursor = doc
+            .selection(view.id)
+            .primary()
+            .cursor(doc.text().slice(..))
+            .clamp(range.from(), range.to());
+        doc.set_selection(view.id, Selection::point(cursor));
+        return;
+    } else if is_oil_buffer(doc) {
+        cx.editor.enter_normal_mode();
+        return;
+    }
+
     log::trace!(
         "entering insert mode with sel: {:?}, text: {:?}",
         doc.selection(view.id),
@@ -3942,6 +4065,26 @@ fn insert_mode(cx: &mut Context) {
 fn append_mode(cx: &mut Context) {
     enter_insert_mode(cx);
     let (view, doc) = current!(cx.editor);
+
+    if let Some(range) = oil_entry_range(view, doc) {
+        let cursor = doc
+            .selection(view.id)
+            .primary()
+            .cursor(doc.text().slice(..))
+            .clamp(range.from(), range.to());
+        let cursor = if cursor < range.to() {
+            graphemes::next_grapheme_boundary(doc.text().slice(..), cursor).min(range.to())
+        } else {
+            range.to()
+        };
+        doc.restore_cursor = true;
+        doc.set_selection(view.id, Selection::point(cursor));
+        return;
+    } else if is_oil_buffer(doc) {
+        cx.editor.enter_normal_mode();
+        return;
+    }
+
     doc.restore_cursor = true;
     let text = doc.text().slice(..);
 
@@ -4135,7 +4278,10 @@ fn oil_listing(directory: &Path) -> Result<String, String> {
         .filter_map(Result::ok)
         .map(|entry| {
             let path = entry.path();
-            (path.is_dir(), entry.file_name().to_string_lossy().into_owned())
+            (
+                path.is_dir(),
+                entry.file_name().to_string_lossy().into_owned(),
+            )
         })
         .collect::<Vec<_>>();
     entries.sort_by(|(left_dir, left), (right_dir, right)| {
@@ -4161,7 +4307,10 @@ fn oil_listing(directory: &Path) -> Result<String, String> {
 pub(crate) fn oil_enter(cx: &mut Context) {
     let (view, doc) = current!(cx.editor);
     let text = doc.text().slice(..);
-    let lines = text.lines().map(|line| line.to_string()).collect::<Vec<_>>();
+    let lines = text
+        .lines()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>();
     let line_number = text.char_to_line(doc.selection(view.id).primary().cursor(text));
 
     let Some(header) = lines.first() else { return };
@@ -4196,16 +4345,20 @@ pub(crate) fn oil_enter(cx: &mut Context) {
         };
         let view_id = view.id;
         let doc_id = doc.id();
-        let doc = cx.editor.documents.get_mut(&doc_id).expect("current document");
-        let transaction = Transaction::change(doc.text(), std::iter::once((
-            0,
-            doc.text().len_chars(),
-            Some(content.into()),
-        )));
+        let doc = cx
+            .editor
+            .documents
+            .get_mut(&doc_id)
+            .expect("current document");
+        let transaction = Transaction::change(
+            doc.text(),
+            std::iter::once((0, doc.text().len_chars(), Some(content.into()))),
+        );
         doc.apply(&transaction, view_id);
         cx.editor.set_status(format!("oil: {}", target.display()));
     } else if let Err(error) = cx.editor.open(&target, Action::Replace) {
-        cx.editor.set_error(format!("unable to open '{}': {error}", target.display()));
+        cx.editor
+            .set_error(format!("unable to open '{}': {error}", target.display()));
     }
 }
 
@@ -4632,6 +4785,16 @@ fn insert_at_line_start(cx: &mut Context) {
 // `A` inserts at the end of each line with a selection.
 // If the line is empty, automatically indent.
 fn insert_at_line_end(cx: &mut Context) {
+    if is_oil_buffer(doc!(cx.editor)) {
+        let (view, doc) = current!(cx.editor);
+        let Some(range) = oil_entry_range(view, doc) else {
+            return;
+        };
+        doc.restore_cursor = true;
+        doc.set_selection(view.id, Selection::point(range.to()));
+        enter_insert_mode(cx);
+        return;
+    }
     insert_with_indent(cx, IndentFallbackPos::LineEnd);
 }
 
@@ -4915,11 +5078,21 @@ fn open(cx: &mut Context, open: Open, comment_continuation: CommentContinuation)
 
 // o inserts a new line after each line with a selection
 fn open_below(cx: &mut Context) {
+    if is_oil_buffer(doc!(cx.editor))
+        && oil_entry_range(view!(cx.editor), doc!(cx.editor)).is_none()
+    {
+        return;
+    }
     open(cx, Open::Below, CommentContinuation::Enabled)
 }
 
 // O inserts a new line before each line with a selection
 fn open_above(cx: &mut Context) {
+    if is_oil_buffer(doc!(cx.editor))
+        && oil_entry_range(view!(cx.editor), doc!(cx.editor)).is_none()
+    {
+        return;
+    }
     open(cx, Open::Above, CommentContinuation::Enabled)
 }
 
@@ -5678,6 +5851,9 @@ pub mod insert {
     }
 
     pub fn delete_char_backward(cx: &mut Context) {
+        if !oil_prepare_insert_deletion(cx, false) {
+            return;
+        }
         let count = cx.count();
         let (view, doc) = current_ref!(cx.editor);
         let text = doc.text().slice(..);
@@ -5721,6 +5897,9 @@ pub mod insert {
     }
 
     pub fn delete_char_forward(cx: &mut Context) {
+        if !oil_prepare_insert_deletion(cx, true) {
+            return;
+        }
         let count = cx.count();
         delete_by_selection_insert_mode(
             cx,
@@ -5733,6 +5912,9 @@ pub mod insert {
     }
 
     pub fn delete_word_backward(cx: &mut Context) {
+        if !oil_prepare_insert_deletion(cx, false) {
+            return;
+        }
         let count = cx.count();
         delete_by_selection_insert_mode(
             cx,
@@ -5747,6 +5929,9 @@ pub mod insert {
     }
 
     pub fn delete_word_forward(cx: &mut Context) {
+        if !oil_prepare_insert_deletion(cx, true) {
+            return;
+        }
         let count = cx.count();
         delete_by_selection_insert_mode(
             cx,
@@ -6550,10 +6735,16 @@ fn keep_or_remove_selections_impl(cx: &mut Context, remove: bool) {
 }
 
 fn join_selections(cx: &mut Context) {
+    if is_oil_buffer(doc!(cx.editor)) {
+        return;
+    }
     join_selections_impl(cx, false)
 }
 
 fn join_selections_space(cx: &mut Context) {
+    if is_oil_buffer(doc!(cx.editor)) {
+        return;
+    }
     join_selections_impl(cx, true)
 }
 
