@@ -599,7 +599,7 @@ fn lsp_item_to_transaction(
     view_id: ViewId,
     item: &lsp::CompletionItem,
     offset_encoding: OffsetEncoding,
-    trigger_offset: usize,
+    _trigger_offset: usize,
     replace_mode: bool,
 ) -> (Transaction, Option<RenderedSnippet>) {
     let selection = doc.selection(view_id);
@@ -632,19 +632,12 @@ fn lsp_item_to_transaction(
             .insert_text
             .clone()
             .unwrap_or_else(|| item.label.clone());
-        // check that we are still at the correct savepoint
-        // we can still generate a transaction regardless but if the
-        // document changed (and not just the selection) then we will
-        // likely delete the wrong text (same if we applied an edit sent by the LS)
-        if primary_cursor != trigger_offset {
-            // A long-running command can allow an asynchronous completion
-            // response to outlive the popup's original cursor. Never apply a
-            // stale insert-only item at a potentially wrong location.
-            log::debug!(
-                "discarding stale completion item: cursor={primary_cursor}, trigger={trigger_offset}"
-            );
-            return (Transaction::new(doc.text()), None);
-        }
+        // The completion savepoint is restored before this function is called
+        // when accepting a completion. Use the restored cursor rather than
+        // rejecting the item when it differs from the original trigger
+        // position: the latter turns acceptance into a no-op for valid
+        // insert-text completions after the document has been temporarily
+        // changed while navigating the menu.
         (None, new_text)
     };
 
